@@ -25,7 +25,7 @@ principal engineer executing ONE designated subphase at a time.
 
 ## Repository facts
 
-- **Source of truth:** [`HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`](HERMECIOUS_EXECUTION_BLUEPRINT_v1.md) (repo root) plus accepted ADRs in [`docs/adr/`](docs/adr/). A proposed ADR is not binding until the owner accepts it.
+- **Source of truth:** [`docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`](docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md) plus accepted ADRs in [`docs/adr/`](docs/adr/). Phase implementation packages and per-subphase prompts live in [`docs/phases/`](docs/phases/). A proposed ADR is not binding until the owner accepts it.
 - **Progress record:** [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md). Read it before starting work. Its subphase table shows the current state.
 - **Secrets:** follow [`docs/runbooks/secrets.md`](docs/runbooks/secrets.md). Never commit `.env` and never print secret values.
 - **Baseline check:** `bash scripts/verify-setup.sh` must pass before every commit. Run `bash scripts/verify-setup.test.sh` whenever you change the check itself.

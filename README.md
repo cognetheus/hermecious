@@ -12,7 +12,8 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 
 | Path | Purpose |
 |---|---|
-| [`HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`](HERMECIOUS_EXECUTION_BLUEPRINT_v1.md) | Master technical specification (source of truth) |
+| [`docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`](docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md) | Master technical specification (source of truth) |
+| [`docs/phases/`](docs/phases/) | Phase implementation packages and per-subphase prompts |
 | [`AGENTS.md`](AGENTS.md) | Operating contract for coding agents and contributors |
 | [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) | Subphase status, evidence, blockers and rollback notes |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |

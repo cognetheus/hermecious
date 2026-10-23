@@ -22,7 +22,7 @@ fail() { printf 'FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 
 # 1. Required P0.1 documents.
 for f in README.md AGENTS.md EXECUTION_LEDGER.md \
-  HERMECIOUS_EXECUTION_BLUEPRINT_v1.md .env.example .gitignore \
+  docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md .env.example .gitignore \
   docs/adr/ADR-001-modular-monolith-and-stack.md docs/runbooks/secrets.md; do
   if [ -f "$f" ]; then pass "present: $f"; else fail "missing: $f"; fi
 done

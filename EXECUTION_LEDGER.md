@@ -170,3 +170,9 @@ None. **Owner actions:** accept or amend ADR-001 and ADR-009.
 ### Next safe step
 
 Owner review of P0.2, then **P0.3** (CI, deterministic tests, migration harness). P0.3 must reuse this Compose stack and toolchain rather than define a second one. Do not start P0.3 until the owner approves it.
+
+## Note 2026-10-23: spec files moved, ADRs accepted (owner decisions)
+
+- **Spec location (corrects P0.1 conflict 1 and the P0.2 starting-state note).** At the owner's direction, the blueprint moved to `docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`. The phase packages (Batch 01, Batch 02) and the `OPUS_P1.x_PROMPT.md` files moved to `docs/phases/`, which is where Batch 02 and its prompts expect them. File contents are unchanged. README, AGENTS.md, ADR-001 and `scripts/verify-setup.sh` now point to the new paths. Earlier ledger entries keep the paths that were true when they were written.
+- **ADR-001 and ADR-009 accepted by the owner on 2026-10-23.**
+- **P1.1 preflight (Batch 02) was run and blocked:** P1.1 requires P0.3 and P0.4 to be VERIFIED, and both were `not-started`. The owner chose to run P0.3 next.

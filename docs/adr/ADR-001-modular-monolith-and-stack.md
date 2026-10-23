@@ -2,7 +2,7 @@
 
 - **Status:** Proposed. Awaiting owner acceptance at the P0.1 review.
 - **Date:** 2026-10-23
-- **Source:** `HERMECIOUS_EXECUTION_BLUEPRINT_v1.md` §1 (Technical baseline) and §11 (Initial ADR log)
+- **Source:** `docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md` §1 (Technical baseline) and §11 (Initial ADR log)
 
 ## Context
 
