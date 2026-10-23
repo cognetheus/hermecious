@@ -1,11 +1,15 @@
+import pytest
 from fastapi.testclient import TestClient
 
+from app.api.health import ReadinessCheck
 from app.core.settings import Settings
 from app.main import create_app
 
-SETTINGS = Settings(
-    database_url="postgresql://user:db-secret-value@db.invalid:5432/app",
-    redis_url="redis://cache.invalid:6379/0",
+SETTINGS = Settings.model_validate(
+    {
+        "database_url": "postgresql://user:db-secret-value@db.invalid:5432/app",
+        "redis_url": "redis://cache.invalid:6379/0",
+    }
 )
 
 
@@ -17,7 +21,7 @@ def failing() -> None:
     raise ConnectionError("could not connect to postgresql://user:db-secret-value@db.invalid")
 
 
-def client(**checks) -> TestClient:
+def client(**checks: ReadinessCheck) -> TestClient:
     return TestClient(create_app(SETTINGS, readiness_checks=checks))
 
 
@@ -48,7 +52,7 @@ def test_not_ready_when_redis_fails() -> None:
     assert response.json()["checks"] == {"postgres": "ok", "redis": "unavailable"}
 
 
-def test_failed_check_is_logged_without_details(caplog) -> None:
+def test_failed_check_is_logged_without_details(caplog: pytest.LogCaptureFixture) -> None:
     client(postgres=failing, redis=ok).get("/health/ready")
     assert "dependency=postgres error_class=ConnectionError" in caplog.text
     assert "db-secret-value" not in caplog.text

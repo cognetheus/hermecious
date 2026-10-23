@@ -1,4 +1,7 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
 
 from app.workers import worker
 from app.workers.worker import MAX_HEARTBEAT_AGE, heartbeat_is_fresh
@@ -16,13 +19,17 @@ def test_stale_or_missing_heartbeat_is_not_fresh() -> None:
     assert not heartbeat_is_fresh(None, AT)
 
 
-def test_unregistered_worker_is_unhealthy(tmp_path, monkeypatch, capsys) -> None:
+def test_unregistered_worker_is_unhealthy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(worker, "NAME_FILE", tmp_path / "absent")
     assert worker.healthcheck() == 1
     assert "not registered" in capsys.readouterr().out
 
 
-def test_unreachable_broker_is_unhealthy(tmp_path, monkeypatch, capsys) -> None:
+def test_unreachable_broker_is_unhealthy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     name_file = tmp_path / "name"
     name_file.write_text("hermecious-test")
     monkeypatch.setattr(worker, "NAME_FILE", name_file)

@@ -22,7 +22,8 @@ QUEUES = ["default"]
 # RQ refreshes the heartbeat at least every WORKER_TTL_SECONDS - 15 while idle.
 WORKER_TTL_SECONDS = 30
 MAX_HEARTBEAT_AGE = timedelta(seconds=WORKER_TTL_SECONDS)
-NAME_FILE = Path("/tmp/hermecious-worker-name")
+# Container-local; the worker image has a single unprivileged user.
+NAME_FILE = Path("/tmp/hermecious-worker-name")  # noqa: S108
 HEALTHCHECK_TIMEOUT_SECONDS = 2
 
 

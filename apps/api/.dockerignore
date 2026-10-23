@@ -1,6 +1,9 @@
-# Only pyproject.toml, uv.lock and app/ are needed in the build context.
+# Allowlist. Tests reach only the `test` stage; the runtime stage copies app/ and alembic/.
 *
 !pyproject.toml
 !uv.lock
+!alembic.ini
+!alembic/
 !app/
+!tests/
 **/__pycache__

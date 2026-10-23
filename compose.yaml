@@ -77,6 +77,24 @@ services:
       retries: 3
       start_period: 15s
 
+  # Integration test runner (P0.3). Only started via the `test` profile by
+  # scripts/test-integration.sh, in a throwaway project with its own volume.
+  api-test:
+    profiles: ["test"]
+    build:
+      context: ./apps/api
+      target: test
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      <<: *app-environment
+      HERMECIOUS_ENV: test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   web:
     <<: *app-service
     build: ./apps/web

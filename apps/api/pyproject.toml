@@ -10,14 +10,36 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "redis>=8.1.0",
     "rq>=2.12.0",
+    "sqlalchemy>=2.1.6",
+    "alembic>=1.20.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
     "httpx2>=2.16.0",
+    "ruff>=0.17.2",
+    "mypy>=2.4.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "DTZ"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+files = ["app", "alembic", "tests"]
