@@ -6,8 +6,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 
 | ID | Title (blueprint §4) | Status |
 |---|---|---|
-| P0.1 | AGENTS.md, README, ADR-001, ledger, `.env.example`, secrets rules | verified (owner proceeded to P0.2; ADR-001 still Proposed) |
-| P0.2 | Compose (API, web, Postgres, Redis, worker), health/readiness | verified; awaiting owner review |
+| P0.1 | AGENTS.md, README, ADR-001, ledger, `.env.example`, secrets rules | verified (ADR-001 accepted 2026-10-23) |
+| P0.2 | Compose (API, web, Postgres, Redis, worker), health/readiness | verified (ADR-009 accepted 2026-10-23) |
 | P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | not-started |
 | P0.4 | Structured logging, typed errors, config validation, secret masking | not-started |
 | P1.1 to P12.4 | See blueprint §4 | not-started |

@@ -1,6 +1,6 @@
 # ADR-001: Modular monolith with a separate worker, and the approved MVP stack
 
-- **Status:** Proposed. Awaiting owner acceptance at the P0.1 review.
+- **Status:** Accepted by the owner on 2026-10-23.
 - **Date:** 2026-10-23
 - **Source:** `docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md` §1 (Technical baseline) and §11 (Initial ADR log)
 

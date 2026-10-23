@@ -1,6 +1,6 @@
 # ADR-009: RQ as the background worker mechanism
 
-- **Status:** Proposed. Awaiting owner acceptance at the P0.2 review.
+- **Status:** Accepted by the owner on 2026-10-23.
 - **Date:** 2026-10-23
 - **Source:** blueprint §1 ("Dramatiq or RQ: select one via ADR"), ADR-001 open decision, Batch 01 P0.2
 
