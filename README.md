@@ -6,7 +6,7 @@ It is **not** a bulk-message bot, a scraper of prohibited sources, or a generic 
 
 ## Status
 
-Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. There are **no product features yet**: no business tables, authentication, discovery or messaging.
+Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). There are **no product features yet**: no business tables, authentication, discovery or messaging.
 
 ## Repository layout
 
@@ -24,6 +24,8 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 | [`apps/api/`](apps/api/) | FastAPI app and RQ worker (Python 3.13, uv) |
 | [`apps/web/`](apps/web/) | Next.js operator UI (Node 22, npm) |
 | [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md) | Stack commands, health contracts, recovery and troubleshooting |
+| [`docs/runbooks/testing.md`](docs/runbooks/testing.md) | `scripts/check.sh`, test layout, integration stack, migrations, time control |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: runs `scripts/check.sh` |
 
 ## Setup on a clean machine
 

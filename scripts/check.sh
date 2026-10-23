@@ -23,12 +23,14 @@ step() { # step <name> <command...>
   local name=$1
   shift
   printf '\n==> %s\n' "$name"
+  local started=$SECONDS
   "$@"
   local status=$?
+  local took="$((SECONDS - started))s"
   if [ "$status" -eq 0 ]; then
-    results+=("PASS     $name")
+    results+=("PASS     $name ($took)")
   else
-    results+=("FAIL($status)  $name")
+    results+=("FAIL($status)  $name ($took)")
     failed=1
   fi
 }
