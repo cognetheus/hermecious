@@ -86,6 +86,8 @@ def healthcheck() -> int:
     except Exception as exc:
         print(f"unhealthy: broker unreachable ({type(exc).__name__})")
         return 1
+    finally:
+        connection.close()
     if worker is None or not heartbeat_is_fresh(worker.last_heartbeat, now()):
         print("unhealthy: no fresh heartbeat")
         return 1

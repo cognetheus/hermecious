@@ -1,4 +1,5 @@
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 
 import psycopg
 from fastapi import FastAPI
@@ -35,13 +36,25 @@ def redis_check(client: Redis) -> health.ReadinessCheck:
     return check
 
 
+def close_app(app: FastAPI) -> None:
+    """Release pooled connections (database engine and Redis client)."""
+    app.state.engine.dispose()
+    app.state.redis.close()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    close_app(app)
+
+
 def create_app(
     settings: Settings,
     readiness_checks: Mapping[str, health.ReadinessCheck] | None = None,
     clock: Clock | None = None,
 ) -> FastAPI:
     # No interactive docs: every non-public /api/v1 route requires a session.
-    app = FastAPI(title="Hermecious API", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Hermecious API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     clock = clock or SystemClock()
     redis_client = Redis.from_url(
         str(settings.redis_url),
@@ -57,6 +70,7 @@ def create_app(
     app.state.settings = settings
     app.state.clock = clock
     app.state.engine = engine
+    app.state.redis = redis_client
     app.state.session_factory = make_session_factory(engine)
     app.state.login_limiter = LoginRateLimiter(redis_client, clock)
     app.state.readiness_checks = readiness_checks

@@ -8,12 +8,14 @@ from redis import Redis
 from rq import Worker
 
 from app.core.settings import Settings
-from app.main import create_app
+from app.main import close_app, create_app
 from app.workers import worker as worker_module
 
 
 def test_ready_with_real_dependencies(settings: Settings) -> None:
-    response = TestClient(create_app(settings)).get("/health/ready")
+    app = create_app(settings)
+    response = TestClient(app).get("/health/ready")
+    close_app(app)
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "checks": {"postgres": "ok", "redis": "ok"}}
 
@@ -34,4 +36,5 @@ def test_worker_healthcheck_tracks_real_registration(
     finally:
         rq_worker.register_death()  # type: ignore[no-untyped-call]
         connection.delete(rq_worker.key)
+        connection.close()
     assert worker_module.healthcheck() == 1

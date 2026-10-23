@@ -42,6 +42,7 @@ If `POSTGRES_PASSWORD` is empty, `docker compose` refuses to run with `required 
 | Restart one service | `docker compose restart worker` |
 | Stop, keeping containers | `docker compose stop` |
 | Stop and remove containers, **keeping data** | `docker compose down` |
+| Create the first owner (once) | see [auth runbook](auth.md) |
 | Apply database migrations | `docker compose run --rm --no-deps api python -m alembic upgrade head` |
 | psql shell | `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
 

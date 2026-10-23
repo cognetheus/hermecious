@@ -102,6 +102,9 @@ services:
   web:
     <<: *app-service
     build: ./apps/web
+    environment:
+      # Server-side session checks call the API directly inside the Compose network.
+      API_INTERNAL_URL: http://api:8000
     ports:
       - "127.0.0.1:${HERMECIOUS_WEB_PORT:-3000}:3000"
     healthcheck:

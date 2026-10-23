@@ -35,6 +35,7 @@ def queue(settings: Settings) -> Iterator[Queue]:
     q = Queue(f"trace-test-{uuid.uuid4().hex[:8]}", connection=connection)
     yield q
     q.delete(delete_jobs=True)
+    connection.close()
 
 
 def outcome(job: Job) -> dict[str, str | None]:

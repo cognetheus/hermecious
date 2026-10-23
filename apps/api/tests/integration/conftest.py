@@ -17,7 +17,7 @@ from sqlalchemy.engine import URL
 
 from app.core.clock import FixedClock
 from app.core.settings import Settings, SettingsError, load_settings
-from app.main import create_app
+from app.main import close_app, create_app
 from tests.factories import TEST_ORIGIN
 from tests.integration.db import alembic, plain, scratch_database
 
@@ -67,14 +67,15 @@ def clean_state(app_settings: Settings) -> None:
         ]
         if tables:
             conn.execute("TRUNCATE " + ", ".join(f'"{t}"' for t in tables) + " CASCADE")
-    Redis.from_url(str(app_settings.redis_url)).flushdb()
+    with Redis.from_url(str(app_settings.redis_url)) as redis_client:
+        redis_client.flushdb()
 
 
 @pytest.fixture
 def app(app_settings: Settings, clock: FixedClock, clean_state: None) -> Iterator[FastAPI]:
     application = create_app(app_settings, clock=clock)
     yield application
-    application.state.engine.dispose()
+    close_app(application)
 
 
 @pytest.fixture

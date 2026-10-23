@@ -20,7 +20,7 @@ from app.auth.models import AuthSession, Organization, OrganizationStatus, Role,
 from app.auth.service import Actor
 from app.core.clock import FixedClock
 from app.core.settings import Settings
-from app.main import create_app
+from app.main import close_app, create_app
 from tests.integration.auth_helpers import (
     ORIGIN,
     PASSWORD,
@@ -194,7 +194,7 @@ def test_redis_outage_fails_login_closed_but_keeps_sessions(
     assert denied.status_code == 503
     assert denied.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
     assert broken_client.get("/api/v1/auth/me").status_code == 200  # Postgres-backed session still valid
-    broken.state.engine.dispose()
+    close_app(broken)
 
 
 # --- AUTH-03: successful login --------------------------------------------------------------
@@ -528,7 +528,7 @@ def test_sessions_survive_an_api_restart(app: FastAPI, client: TestClient, app_s
     again = TestClient(restarted, raise_server_exceptions=False)
     again.cookies = client.cookies
     assert again.get("/api/v1/auth/me").status_code == 200
-    restarted.state.engine.dispose()
+    close_app(restarted)
 
 
 def test_database_outage_is_a_safe_503(app: FastAPI, client: TestClient, app_settings: Settings) -> None:
@@ -545,7 +545,7 @@ def test_database_outage_is_a_safe_503(app: FastAPI, client: TestClient, app_set
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
     assert "db-secret-value" not in response.text
-    down.state.engine.dispose()
+    close_app(down)
 
 
 def test_login_rotates_and_revokes_a_presented_session(app: FastAPI, client: TestClient) -> None:
