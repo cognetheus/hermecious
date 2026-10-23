@@ -29,7 +29,8 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 Prerequisites: `git`, `bash`, `curl`, `openssl` and Docker with the Compose v2 plugin. Python and Node are only needed to work on the code outside containers.
 
 ```sh
-git clone https://github.com/cognetheus/hermecious.git
+# Private repository: needs a GitHub account with access (SSH shown).
+git clone git@github.com:cognetheus/hermecious.git
 cd hermecious
 cp .env.example .env
 chmod 600 .env
