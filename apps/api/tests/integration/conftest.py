@@ -39,6 +39,10 @@ def settings() -> Iterator[Settings]:
     yield load_settings()
 
 
+# Seeded by migrations, not by tests: never truncated.
+REFERENCE_TABLES = frozenset({"alembic_version", "verticals"})
+
+
 @pytest.fixture(scope="session")
 def migrated_database(settings: Settings) -> Iterator[URL]:
     """One scratch database per session, migrated to head through the real Alembic CLI."""
@@ -57,13 +61,12 @@ def app_settings(settings: Settings, migrated_database: URL) -> Settings:
 
 @pytest.fixture
 def clean_state(app_settings: Settings) -> None:
-    """Empty every application table and the test Redis before each test."""
+    """Empty every application table (keeping migration-seeded reference data) and the test Redis."""
     with psycopg.connect(str(app_settings.database_url), autocommit=True) as conn:
         tables = [
             row[0]
-            for row in conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
-            )
+            for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            if row[0] not in REFERENCE_TABLES
         ]
         if tables:
             conn.execute("TRUNCATE " + ", ".join(f'"{t}"' for t in tables) + " CASCADE")
