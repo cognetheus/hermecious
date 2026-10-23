@@ -9,7 +9,7 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P0.1 | AGENTS.md, README, ADR-001, ledger, `.env.example`, secrets rules | verified (ADR-001 accepted 2026-10-23) |
 | P0.2 | Compose (API, web, Postgres, Redis, worker), health/readiness | verified (ADR-009 accepted 2026-10-23) |
 | P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | partially verified: all local gates pass; remote CI run not observed (A2 NOT RUN) |
-| P0.4 | Structured logging, typed errors, config validation, secret masking | not-started |
+| P0.4 | Structured logging, typed errors, config validation, secret masking | verified |
 | P1.1 to P12.4 | See blueprint §4 | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
@@ -250,3 +250,67 @@ ruff check and format (line length 120; rules E W F I B UP S SIM DTZ), `mypy --s
 ### Next safe step
 
 Close A2, then **P0.4** (structured logs, typed errors, validated config, redaction). P1.1's preflight requires P0.3 and P0.4 to be VERIFIED.
+
+## P0.4 — Structured logs, typed errors, validated config and redaction (2026-10-23)
+
+**Scope:** Batch 01 §P0.4. Executed at the owner's instruction to continue without pausing ("keep working don't pause"), while P0.3 A2 (remote CI observation) is still NOT RUN. **Not touched:** Sentry/OTel, alerts, analytics, message handling, web (Next.js) log format.
+
+### Starting state
+
+`1c025a5`, clean. Settings had only `DATABASE_URL`/`REDIS_URL`. Logging was the stdlib default with plain-text uvicorn and RQ output. There was no error envelope, so FastAPI defaults leaked validation inputs in 422 bodies. There were no request IDs.
+
+### Decisions
+
+1. **One settings component** (`app/core/settings.py`). `HERMECIOUS_ENV` is now **required** (`development|test|production`, no default, so there is no hidden fallback). Also `HERMECIOUS_LOG_LEVEL` (default INFO). Production rejects DEBUG. The `Settings` repr masks URLs. `SettingsError.names` carries setting names only.
+2. **Stdlib logging with our own `JsonFormatter`**, no new dependency. **Allowlist** context keys (`SAFE_CONTEXT_KEYS`); everything else becomes `[REDACTED]`, recursively. **Scrubbing** applies to every string, including third-party messages and tracebacks.
+3. **Uvicorn access logs are disabled** (they carry query strings). The middleware emits `http.request` with the path only.
+4. **Pure ASGI `RequestContextMiddleware`**, rather than `BaseHTTPMiddleware`, so the contextvar is reliable. It is the outermost app middleware, catches unhandled exceptions before Starlette's `ServerErrorMiddleware`, and so attaches `X-Request-ID` and the envelope to 500s.
+5. **4xx statuses outside the category list** (for example 405) keep their status and use `VALIDATION_ERROR`. **5xx** responses use `INTERNAL_ERROR`, except dependency outages, which use 503 `DEPENDENCY_UNAVAILABLE`.
+6. **Worker tracing:** `TracingMixin.perform_job` binds the job's `trace_id` meta (validated) or a fresh `job_` ID for one job only. RQ runs with `log_job_description=False` because job arguments may hold personal data.
+7. **Compose** passes `HERMECIOUS_ENV` (required) and `HERMECIOUS_LOG_LEVEL` to api and worker. `.env.example`, `test-integration.sh` and `check.sh` were updated.
+8. **Bookkeeping:** commit `6830282` also picked up the owner's new `docs/phases/HERMECIOUS_BATCH_04_P2.2-P2.4.md` and `OPUS_P2.2–P2.4_PROMPT.md` files (unchanged), because they were present under `docs/` when it was staged.
+
+### Acceptance evidence
+
+| ID | Test / command | Observed | Result |
+|---|---|---|---|
+| A1 | Real container: `curl -H 'X-Request-ID: p04-evidence-0001' '/health/live?token=QUERY-SECRET&phone=03001234567'` | Response `x-request-id: p04-evidence-0001`. Log line `{"service":"api","event":"http.request","request_id":"p04-evidence-0001","context":{"method":"GET","path":"/health/live","status":200,...}}`, with no query string | PASS |
+| A1 | `test_request_correlation.py::test_generated_id_matches_header_and_log`, `test_safe_client_id_is_propagated` | Generated `req_` ID equals the header and the log field | PASS |
+| A2 | `test_error_envelope.py::test_validation_error_is_422_without_submitted_data`, `test_malformed_json_is_a_safe_validation_error` | 422 `VALIDATION_ERROR`, `retryable=false`, submitted values absent | PASS |
+| A3 | `test_unhandled_error_is_500_without_traceback` | 500 `{"code":"INTERNAL_ERROR","message":"Internal error",...}`. No `Traceback`, class name, secret or path in the body. Log has `http.unhandled_exception` with the same `request_id` and a scrubbed traceback | PASS |
+| A4 | `test_dependency_failure_is_retryable_503[postgres-down, redis-down]`, typed `DependencyUnavailable` | 503 `DEPENDENCY_UNAVAILABLE`, `retryable=true`, no hostnames or secrets | PASS |
+| A5 | Real container: `docker compose run --rm --no-deps -e HERMECIOUS_ENV= -e DATABASE_URL='mysql://u:LEAK-P04@x/y' api` | exit 1; `{"level":"critical","event":"config.invalid","context":{"settings":["DATABASE_URL","HERMECIOUS_ENV"]}}`; `LEAK-P04` in logs: 0 | PASS |
+| A5 | `test_entrypoints.py` (api and worker) and `test_settings.py` (unknown env, production+DEBUG, masked repr) | Names only; values never printed | PASS |
+| A6 | `test_redaction.py` seeds a nested password, API key, cookie, DB URL, phone, message body, email and bearer token | None of the seeded values appear in output | PASS |
+| A6 | Real logs of all services after the runs above | password 0, `QUERY-SECRET` 0, `03001234567` 0, `a@b.co` 0; non-JSON api/worker lines 0 | PASS |
+| A7 | `test_concurrent_requests_never_share_context` (100 interleaved ASGI requests) | 100 distinct IDs; each handler saw its own ID before and after `await` | PASS |
+| A7 | `tests/integration/test_trace_context.py` (real Redis, SimpleWorker): from-request, standalone and tampered-meta jobs, plus a failed job and its follow-up | The job inherits the request ID; standalone and tampered jobs get distinct `job_` IDs; no leakage after failure; context `None` afterwards | PASS |
+| A8 | `test_request_context.py` (11 unsafe IDs) and `test_hostile_client_ids_are_replaced` (100 kB ID, JSON injection, newline, markup); real 300-character ID | All replaced with a 36-character `req_` ID; exactly one log line; hostile text absent | PASS |
+
+### Negative paths
+
+| Case | Observed |
+|---|---|
+| Third-party noisy logs | uvicorn, RQ and Alembic all route through `JsonFormatter`; httpx/sqlalchemy pinned to WARNING |
+| Malformed exception / hostile object | An object whose `__str__` and `__repr__` raise logs as its class name. A bad `%` format gives `log.format_error` with no crash |
+| Sink errors | `logging.raiseExceptions = False`; documented limitation (dropped silently) |
+| Worker failure before cleanup | A failed job still clears context (A7) |
+| Validation exceptions | A2 |
+| **Found and fixed:** `redis://:password@host` (empty username) was not scrubbed | Caught by `test_percent_args_are_scrubbed_after_formatting`. The pattern now allows an empty username |
+| Cancellation | `CancelledError` is a `BaseException`, so it is not caught; the contextvar reset runs in `finally`. Not separately tested |
+
+### Regression
+
+`bash scripts/check.sh`: 15/15 PASS (API unit + contract 87 tests, integration 10). P0.2: `scripts/smoke-local.sh` and `scripts/recovery-local.sh` all PASS. Worker recovery after the Redis outage took 41s this run (RQ backoff, within the 150s bound).
+
+### Changed files
+
+`apps/api/app/core/{settings,logging,errors,request_context}.py`, `apps/api/app/api/{middleware,health}.py`, `apps/api/app/{main,__main__}.py`, `apps/api/app/workers/{tracing,worker}.py`, tests (`unit/test_{redaction,request_context,entrypoints,settings,worker_health}.py`, `contracts/test_{error_envelope,request_correlation,health_contract}.py`, `integration/test_trace_context.py`, `conftest.py`), `compose.yaml`, `.env.example`, `scripts/{check,test-integration}.sh`, `docs/runbooks/observability.md`, `README.md`. Commit `6830282`.
+
+### Rollback
+
+`git revert 6830282`. There is no schema change. Do not disable redaction as a fix. After a revert, `.env` still contains `HERMECIOUS_LOG_LEVEL`, which is harmless.
+
+### Next
+
+P1.1 (Batch 02). Its preflight needs P0.1–P0.4 VERIFIED; P0.3 is partial only because remote CI is unobserved. The owner directed continuous execution, so P1.1 proceeds and records this gap.
