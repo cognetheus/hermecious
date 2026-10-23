@@ -43,7 +43,9 @@ def run() -> int:
     # previous registration (same hostname) has not yet expired.
     name = f"hermecious-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
     NAME_FILE.write_text(name)
-    worker = Worker(QUEUES, connection=Redis.from_url(str(settings.redis_url)), name=name, worker_ttl=WORKER_TTL_SECONDS)
+    worker = Worker(
+        QUEUES, connection=Redis.from_url(str(settings.redis_url)), name=name, worker_ttl=WORKER_TTL_SECONDS
+    )
     worker.work()
     return 0
 

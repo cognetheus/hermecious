@@ -9,6 +9,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 command -v docker >/dev/null 2>&1 || { echo "ERROR docker is required"; exit 2; }
 command -v curl >/dev/null 2>&1 || { echo "ERROR curl is required"; exit 2; }
+docker info >/dev/null 2>&1 || { echo "ERROR Docker daemon is not reachable"; exit 2; }
 
 failures=0
 pass() { printf 'PASS  %s\n' "$1"; }
