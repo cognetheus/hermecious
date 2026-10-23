@@ -6,7 +6,7 @@ It is **not** a bulk-message bot, a scraper of prohibited sources, or a generic 
 
 ## Status
 
-Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). There are **no sales features yet**: no accounts, discovery or messaging.
+Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). P1.2 added the rights-aware account, source and fact data model (no UI yet). There is no discovery or messaging yet.
 
 ## Repository layout
 
@@ -27,6 +27,7 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 | [`docs/runbooks/testing.md`](docs/runbooks/testing.md) | `scripts/check.sh`, test layout, integration stack, migrations, time control |
 | [`docs/runbooks/observability.md`](docs/runbooks/observability.md) | JSON logs, redaction, request IDs, error envelope |
 | [`docs/runbooks/auth.md`](docs/runbooks/auth.md) | Owner bootstrap, sessions, CSRF, roles, login limits |
+| [`docs/contracts/core-domain.md`](docs/contracts/core-domain.md) | Accounts, sources, facts: schema, rights policy, fact rules |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: runs `scripts/check.sh` |
 
 ## Setup on a clean machine

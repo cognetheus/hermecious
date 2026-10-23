@@ -11,7 +11,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | partially verified: all local gates pass; remote CI run not observed (A2 NOT RUN) |
 | P0.4 | Structured logging, typed errors, config validation, secret masking | verified |
 | P1.1 | Auth, sessions, CSRF, operator-only access (Batch 02) | verified |
-| P1.2 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
+| P1.2 | Core account/source/fact schema, rights policy, migrations (Batch 02) | verified |
+| P1.3 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
 
@@ -432,3 +433,97 @@ Auth events seen: `csrf_rejected`×2, `login_denied`, `login_succeeded`×2, `log
 ### VERDICT: VERIFIED
 
 The P0.3 remote-CI observation gap is carried forward. P1.2 is next (owner-directed continuous execution).
+
+## P1.2 — Core account, source, provenance and facts database (2026-10-23)
+
+**Scope:** Batch 02 §P1.2 and `OPUS_P1.2_PROMPT.md`. **Base:** `2eaa12d` (`df5e77d` added prompts only). **Head:** `519607b` (code), plus the docs and ledger commit.
+
+### Preflight
+
+P1.1 is VERIFIED. P0.3's remote-CI gap is carried forward. The existing pieces reused are `organizations` (no re-creation), `Actor`, `ROLE_CAPABILITIES`, the single `Base` and naming convention, Alembic (`0002` → `0003`), the P0.4 typed errors, the integration fixtures and `FixedClock`.
+
+### Decisions
+
+- **Feature package `app/accounts/`** (models, policy, claims, service), consistent with `app/auth/`.
+- **Composite FKs have explicit short names.** Convention-generated names exceeded Postgres's 63-character limit and were silently truncated with a hash, which would make hand-written migrations drift.
+- **`areas` uniqueness** uses an expression index over `(org, lower(city), coalesce(lower(district), ''))`. The batch warned about nullable semantics: a plain unique constraint would treat NULL districts as distinct.
+- **Duplicate `(org, provider, external_key)` gives `Conflict` (409)** rather than silently returning the existing row. P2 ingestion decides on idempotent reuse explicitly.
+- **Provider allowlist** (`manual_entry`, `owner_seed_list`, `first_party_website`, `google_places` metadata-only with place ID, `fixture`). Unknown providers are refused.
+- **The claim registry has no "absent" values**, and unknown values can only be hypotheses. New facts must be `source_supported` or `hypothesis`.
+- **No routes were added** (accounts API and UI are P1.4). The default-deny route contract still passes.
+- **Test infrastructure fix:** `clean_state` no longer truncates migration-seeded reference tables (`verticals`). The first run failed with `NotFound` for every account test because of that.
+- **Mapping fix:** SQLAlchemy needs `version_id_col` as a column object, not a string; corrected before the first green run.
+
+### Acceptance evidence
+
+| ID | Executed test / command | Result summary | Status |
+|---|---|---|---|
+| DATA-01 | `test_core_domain_objects_exist_and_reupgrade_is_a_noop`, `test_upgrade_head_is_repeatable` (HEAD `0003`), `test_models_match_migrations` | 6 tables, the composite FKs, CHECKs, partial and expression unique indexes and the seeded `schools` vertical are present. The second upgrade prints no `Running upgrade`, and the catalog is identical. ORM/schema drift `[]` | PASS |
+| DATA-02 | `test_downgrade_of_populated_core_domain_preserves_identity`, `test_downgrade_to_base_and_back` | Populated with an org, user, session and account, then `downgrade 0002`: P1.2 tables are gone and the user and session rows remain. Re-upgrade gives empty accounts with 1 user kept | PASS |
+| DATA-03 | `test_lahore_school_with_source_supported_fact` | Synthetic Lahore account; fact joined to its source with provider, `full_allowed`, rights version, `observed_at`; `is_stale=False` | PASS |
+| DATA-04 | `test_source_supported_without_source_is_rejected_by_service_and_database` | Service: `InvalidRequest("...requires a source record")`. Raw SQL: `CheckViolation ck_account_facts_supported_requires_source`. 0 facts | PASS |
+| DATA-05 | `test_cross_org_links_fail_in_the_database` (3 raw inserts), `test_cross_org_service_access_looks_like_not_found` (5 paths) | `ForeignKeyViolation` on `fk_account_facts_org_account`, `fk_account_facts_org_source` and `fk_account_aliases_org_account`. Service reads and writes across orgs give `NotFound`, as do unknown ids. 0 rows | PASS |
+| DATA-06 | `test_duplicate_external_key_and_alias_are_safe_conflicts`, `test_concurrent_duplicate_sources_store_exactly_one` (6 threads) | Second identical key gives `Conflict` (409, safe message), while the same key in another org is allowed. Punctuation/case variant alias gives `Conflict`. Concurrent: `created` ×1, `conflict` ×5, 1 row | PASS |
+| DATA-07 | `test_same_normalized_name_in_two_localities_stays_two_accounts` | Same normalized name in Johar Town and DHA Phase 5: 2 accounts, never merged | PASS |
+| DATA-08 | `test_forbidden_sources_are_rejected_and_nothing_persists` (18 cases), `test_payload_requires_full_rights_in_the_database`, `test_expired_source_cannot_support_new_facts`, `test_excerpt_rights_and_bounds` (4) | Rejected: unlisted provider, forbidden class, Places content, Places without key, metadata IP, private IP, `[::1]`, localhost, single-label host, metadata host, userinfo, `?token=`, fragment, ftp, `javascript:`, http for an https-only provider, bidi override, >2048 characters. The payload CHECK fires at DB level. Expired source refused for new facts. Excerpts refused on metadata/derived-only sources, >1000 characters or NUL. 0 rows each time | PASS |
+| DATA-09 | `test_hypothesis_is_distinct_and_unknown_stays_unknown`, `test_invalid_or_overclaiming_facts_are_rejected` (12), `test_offset_timestamps_are_normalized_to_utc`, `test_fact_becomes_stale_when_its_source_expires` | Hypotheses are stored without a source and shown separately. Rejected: count 0, string count, extra field, software "none", website "absent", likelihood-to-buy, personal phone claim, unknown as a supported finding, strong hypothesis, disputed-on-create, naive timestamp, future timestamp. `+05:00` stored as UTC. Facts on an expired source show `is_stale=True` | PASS |
+| DATA-10 | `bash scripts/check.sh` | 15/15 PASS (integration 112 tests; unit + contract 122). The route-protection contract shows no new or anonymous routes. Dev DB migrated `0002 -> 0003`; smoke PASS | PASS |
+
+### Failure paths
+
+- **Malicious Unicode:** blank, RLO override and NUL names are rejected; Urdu names are NFKC-normalized and kept.
+- **Unknown or inactive vertical:** `NotFound`.
+- **Nested transaction rollback:** a failed flush inside a savepoint leaves no partial row and the session stays usable.
+- **Concurrent inserts:** see DATA-06.
+- **Optimistic concurrency:** a stale writer gets `StaleDataError`, and the first write is kept at version 2.
+- **Incorrect timestamp offset:** see DATA-09.
+- **Source expiring after a fact was created:** see DATA-09 staleness.
+- **Interrupted migration and transient DB loss:** not separately simulated in P1.2. Migrations run one transaction per revision (`transaction_per_migration=True`), and DB loss maps to 503 (P0.4/P1.1 tests).
+
+### Mutation checks (committed first, then restored with `git checkout`; tree verified clean)
+
+| Mutation | Caught by |
+|---|---|
+| `_is_internal_host` never blocks IP literals | 3 failures: metadata-ip, private-ip, loopback-v6 |
+| `_account` lookup drops `organization_id` scoping | 1 failure: `test_cross_org_service_access_looks_like_not_found` |
+
+The first attempt at the second mutation was invalid (a comment swallowed a parenthesis, so the module failed to compile). It was redone with a compiling mutant before recording.
+
+### Dependency audit
+
+No dependency or lockfile changes in P1.2 (`git diff 01886f2 HEAD` on the lockfiles is empty).
+- `pip-audit` over the 125 locked Python requirements: **No known vulnerabilities found**.
+- `npm audit` (web, all deps): **0 vulnerabilities**.
+
+### Security, privacy and data rights
+
+- No real school, person, phone or address data. Fixtures are fictional and use `.example` domains.
+- No contacts or contact values are stored as facts.
+- No negative-absence claims.
+- Provider rights are enforced before storage, and Google Places content storage is excluded.
+- Cross-org isolation is enforced by both DB composite FKs and service scoping.
+- No raw payloads are logged; services do not log row contents.
+- **Residual risks:**
+  - URL screening is ingestion-only; there is no DNS resolution, so a public hostname resolving to a private IP is caught only at fetch time (P2.1/P11.1).
+  - The provider allowlist lives in code; changing it needs a reviewed change.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/alembic/versions/0003_core_domain.py` | P1.2 schema and the `schools` seed |
+| `apps/api/app/accounts/{models,policy,claims,service}.py` | Domain |
+| `apps/api/app/persistence/registry.py` | Register models |
+| `apps/api/tests/integration/{lahore_fixtures,test_accounts}.py` | Synthetic fixtures and DATA tests |
+| `apps/api/tests/integration/{test_migrations,conftest}.py` | DATA-01/02 and the reference-table-safe cleanup |
+| `docs/contracts/core-domain.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Disposable DB:** `alembic downgrade 0002` (tested; P1.1 data preserved).
+- **Data-bearing DB:** back up and prefer a reviewed forward repair. Never drop fact or source tables to restore code, and never `down -v`.
+- **Code:** `git revert 519607b`.
+
+### VERDICT: VERIFIED
+
+P1.3 is next.
