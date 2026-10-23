@@ -1,0 +1,9 @@
+# Secrets: see docs/runbooks/secrets.md
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS noise
+.DS_Store
