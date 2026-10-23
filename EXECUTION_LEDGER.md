@@ -8,7 +8,7 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 |---|---|---|
 | P0.1 | AGENTS.md, README, ADR-001, ledger, `.env.example`, secrets rules | verified (ADR-001 accepted 2026-10-23) |
 | P0.2 | Compose (API, web, Postgres, Redis, worker), health/readiness | verified (ADR-009 accepted 2026-10-23) |
-| P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | not-started |
+| P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | partially verified: all local gates pass; remote CI run not observed (A2 NOT RUN) |
 | P0.4 | Structured logging, typed errors, config validation, secret masking | not-started |
 | P1.1 to P12.4 | See blueprint §4 | not-started |
 
@@ -176,3 +176,77 @@ Owner review of P0.2, then **P0.3** (CI, deterministic tests, migration harness)
 - **Spec location (corrects P0.1 conflict 1 and the P0.2 starting-state note).** At the owner's direction, the blueprint moved to `docs/HERMECIOUS_EXECUTION_BLUEPRINT_v1.md`. The phase packages (Batch 01, Batch 02) and the `OPUS_P1.x_PROMPT.md` files moved to `docs/phases/`, which is where Batch 02 and its prompts expect them. File contents are unchanged. README, AGENTS.md, ADR-001 and `scripts/verify-setup.sh` now point to the new paths. Earlier ledger entries keep the paths that were true when they were written.
 - **ADR-001 and ADR-009 accepted by the owner on 2026-10-23.**
 - **P1.1 preflight (Batch 02) was run and blocked:** P1.1 requires P0.3 and P0.4 to be VERIFIED, and both were `not-started`. The owner chose to run P0.3 next.
+
+## P0.3 — CI, deterministic tests and migration harness (2026-10-23)
+
+**Scope:** Batch 01 §P0.3 (`docs/phases/HERMECIOUS_BATCH_01_P0.2-P0.4.md`). CI workflow, the canonical validation command, a disposable integration DB and Redis, a minimal Alembic harness, deterministic time, API/web/DB contract tests and a testing runbook. **Not touched:** P1 business tables, jobs/outbox, browser E2E, performance suites.
+
+### Starting state
+
+`8abd44c` on `main`, clean. The P0.2 stack, with no migrations, no CI, no lint/type config and no web tests. Untracked `HERMECIOUS_BATCH_03_P1.4-P2.1.md` and `OPUS_P1.4/P1.5/P2.1_PROMPT.md` appeared during this work. They were left untracked and unread.
+
+### Decisions and deviations
+
+1. **The integration stack reuses `compose.yaml`.** It does not define a second stack. A `test` profile adds an `api-test` service (Dockerfile `test` stage). `scripts/test-integration.sh` runs it in a throwaway project `hermecious-test-<time>-<pid>` with `--env-file /dev/null`, a random password and database `hermecious_test`, and runs `down -v` for that project only on exit.
+2. **Alembic baseline `0001` is empty.** It anchors the chain without creating P1 tables. `env.py` uses only the validated `DATABASE_URL`, with no `sqlalchemy.url` fallback. Offline `--sql` mode is refused. `app/persistence/base.py` defines the single declarative `Base` with a constraint naming convention, which P1.1 must reuse.
+3. **Time:** `app/core/clock.py` provides `Clock`, `SystemClock`, `FixedClock` and `BUSINESS_TZ = Asia/Karachi`. Ruff `DTZ` rules forbid naive datetimes in app code.
+4. **ESLint 10.13.0, not 9.** ESLint 9.39.5 is marked "no longer supported" by npm. `eslint-config-next@16.4.3`'s nested `eslint-plugin-react`, `-jsx-a11y` and `-import` declare peers that stop at ESLint 9, so npm overrides them (`ERESOLVE overriding peer dependency` warnings). I verified empirically that rules from all five plugins fire under v10: `@next/next/no-img-element`, `no-html-link-for-pages`, `@typescript-eslint/no-explicit-any`, `jsx-a11y/alt-text`, `react-hooks/exhaustive-deps`, `react/jsx-key` and `import/no-anonymous-default-export`, with probe file exit 1. **Risk:** a plugin could break on a future rule or syntax. That would surface as a lint failure, so it fails closed. Revisit when the plugins declare v10 support.
+5. **Vitest 5.0.5** is the web test framework (blueprint test stack). `npm run typecheck` uses `next typegen`, so types do not depend on a prior build.
+6. **API tests are split** into `apps/api/tests/{unit,contracts,integration}` and stay inside the Python project. The repo-root `tests/` is left for cross-app E2E and evals. `tests/` is now a package, because mypy saw two `conftest` modules otherwise.
+7. **The P0.2 tests were annotated** to pass `mypy --strict`, and two intentional ruff findings were suppressed inline with reasons: S104 (bind to all interfaces inside the container) and S108 (fixed `/tmp` path in a single-user container).
+8. **CI actions are pinned to commit SHAs** (checkout v7.0.1 `3d3c42e5`, setup-uv v10.3.2 `07a047e6`, setup-node v7.1.0 `949feb24`), with input names verified against each `action.yml`. The workflow has `permissions: contents: read` and `persist-credentials: false`. It pins uv 0.7.9 and Node 22.23.4.
+
+### Acceptance evidence
+
+| ID | Test / command | Observed | Result |
+|---|---|---|---|
+| A1 | `bash scripts/check.sh` at the final tree (`8813e52`) | 15/15 steps PASS, exit 0, about 32s (per-step times in summary) | PASS |
+| A2 | GitHub Actions run of `.github/workflows/ci.yml` | Workflow pushed (`8813e52`). The run cannot be observed: local `gh` is authenticated as `hassan-ali-coderzhunt`, which gets HTTP 404 on the private repo (`gh run list -R cognetheus/hermecious`) | **NOT RUN** |
+| A3 | API `test_clock` and web `health-live` assertions deliberately broken, then `check.sh` | exit 1; summary `FAIL(1) api: unit + contract tests`, `FAIL(1) web: test`, all else PASS. After `git checkout`, exit 0 | PASS (local) |
+| A4 | `tests/integration/test_migrations.py::test_upgrade_head_is_repeatable` (fresh scratch DB, upgrade twice) | `alembic_version = ["0001"]` after both runs | PASS |
+| A4 | `test_downgrade_to_base_and_back` | head → base (no `alembic_version`) → head | PASS |
+| A4 | Dev DB via the runtime image: `docker compose run --rm --no-deps api python -m alembic upgrade head` twice, then `current` | First run `-> 0001`, second a no-op, `0001 (head)` | PASS |
+| A5 | `test_invalid_database_url_refuses_to_migrate` (empty, malformed, `mysql://` with a secret) | non-zero exit, `refusing to run: missing or invalid settings: DATABASE_URL`, secret not in output | PASS |
+| A5 | `test_unreachable_database_fails_without_fallback` | non-zero exit, `OperationalError`; no other DB used | PASS |
+| A5 | Integration suite with `DATABASE_URL=.../hermecious` (non-test name) | `integration tests refused: DATABASE_URL must name a database ending in _test`, exit 2, before any connection | PASS |
+| A5 | Integration suite without `HERMECIOUS_ENV=test` | `integration tests require HERMECIOUS_ENV=test`, exit 2 | PASS |
+| A6 | `pytest tests/unit/test_clock.py tests/unit/test_worker_health.py` under `TZ=UTC`, `America/Los_Angeles`, `Pacific/Kiritimati` and `Asia/Karachi` | `10 passed` in every run | PASS |
+| A7 | `scripts/test-integration.sh` (fresh project and volume each run) | `8 passed`; afterwards only `hermecious_postgres-data` (dev) remains, no `hermecious-test-*` project or volume | PASS |
+| A8 | FastAPI app created and served via TestClient against real deps in the test image (`test_ready_with_real_dependencies`); `npm run build` | ready 200 with real Postgres and Redis; Next build exit 0 | PASS |
+
+### Negative paths observed
+
+| Case | Observed |
+|---|---|
+| Failing migration (`0001.upgrade` raises, temporarily) | Integration step `2 failed, 6 passed`, exit 1; restored → `8 passed` |
+| **Secret in failure output (found and fixed)** | That broken-migration run first printed the scratch DB URL **with its disposable password** through pytest assertion rewriting. Tests now pass URLs as SQLAlchemy `URL` objects (masked repr). Rerun: 0 password-bearing URLs; output shows `postgresql://hermecious:***@postgres:5432/hermecious_scratch_<hex>_test` |
+| Missing DB / unreachable DB | A5 rows above |
+| Broken code (deliberately failing tests) | A3 |
+| Parallel or duplicate test invocations | Two `test-integration.sh` runs at once: projects `...-5403` and `...-5404`, both `8 passed`, exit 0; both cleaned up |
+| Flaky date tests | None possible by construction (`FixedClock`, no sleeps); A6 |
+| GitHub permissions missing | A2: the observing account lacks repo access. The workflow itself requests only `contents: read` |
+| Slow run | One full `check.sh` took over 10 minutes and passed (exit 0). The slow step was not identified; my process listing showed the delay came before `next build`, which suggests `npm ci` or the image rebuild, but that is unconfirmed. Timed reruns took about 32s, and per-step durations are now printed so a recurrence is diagnosable |
+
+### Static checks (all inside `check.sh` unless noted)
+
+ruff check and format (line length 120; rules E W F I B UP S SIM DTZ), `mypy --strict` (29 files), pytest 22 unit/contract plus 8 integration, ESLint `--max-warnings=0`, `next typegen && tsc --noEmit`, Vitest 2 tests, `next build`, shellcheck, `docker compose config`. Ad hoc: `actionlint .github/workflows/ci.yml` exit 0. actionlint is not in `check.sh` because CI runners do not ship it.
+
+### P0.2 regression
+
+`docker compose up --build -d` then `bash scripts/smoke-local.sh`: all smoke checks passed. `api-test` is not started by the default `up`.
+
+### Changed files
+
+`.github/workflows/ci.yml`; `scripts/{check,test-integration}.sh`; `compose.yaml` (`api-test` service); `apps/api/{Dockerfile,.dockerignore,pyproject.toml,uv.lock,alembic.ini}`; `apps/api/alembic/{env.py,script.py.mako,versions/0001_baseline.py}`; `apps/api/app/core/clock.py`; `apps/api/app/persistence/{__init__,base}.py`; `apps/api/app/__main__.py` and `app/workers/worker.py` (lint annotations only); `apps/api/tests/**` (restructured, new clock/schema/integration tests); `apps/web/{package.json,package-lock.json,eslint.config.mjs,vitest.config.ts}`; `apps/web/tests/health-live.test.ts`; `docs/runbooks/{testing,local-development}.md`; `README.md`; `AGENTS.md`. Commits: `2e5bdc7`, `8813e52`, plus this ledger commit.
+
+### Rollback
+
+`git revert` the P0.3 commits. The only migration is the empty baseline `0001`, so `alembic downgrade base` on a DB removes just `alembic_version`. The dev DB was migrated to `0001`. Disposable test projects are removed automatically. Never run `docker compose down -v` on the `hermecious` project.
+
+### Blockers
+
+- **A2 (remote CI) is NOT RUN.** To close it, either let me read Actions (log `gh` in as a user with access to `cognetheus/hermecious`), or open the repo's **Actions** tab and confirm that the `CI` run for `8813e52` is green. Ideally also push a deliberately failing commit on a branch and confirm it goes red.
+
+### Next safe step
+
+Close A2, then **P0.4** (structured logs, typed errors, validated config, redaction). P1.1's preflight requires P0.3 and P0.4 to be VERIFIED.
