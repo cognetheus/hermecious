@@ -1,0 +1,8 @@
+# Source and lockfile only; dependencies are installed inside the image.
+node_modules
+.next
+next-env.d.ts
+*.tsbuildinfo
+.env*
+Dockerfile
+.dockerignore

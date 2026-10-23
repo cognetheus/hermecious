@@ -1,0 +1,6 @@
+# Only pyproject.toml, uv.lock and app/ are needed in the build context.
+*
+!pyproject.toml
+!uv.lock
+!app/
+**/__pycache__
