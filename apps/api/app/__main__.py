@@ -22,7 +22,15 @@ def main() -> int:
     configure_logging("api", settings.environment, settings.log_level)
     logger.info("app.starting")
     # All interfaces inside the container; compose publishes the port on host loopback only.
-    uvicorn.run(create_app(settings), host="0.0.0.0", port=8000, log_config=None, access_log=False)  # noqa: S104
+    # proxy_headers=False: the client IP (login rate limiting) is the direct peer until a trusted proxy exists.
+    uvicorn.run(
+        create_app(settings),
+        host="0.0.0.0",  # noqa: S104
+        port=8000,
+        log_config=None,
+        access_log=False,
+        proxy_headers=False,
+    )
     return 0
 
 

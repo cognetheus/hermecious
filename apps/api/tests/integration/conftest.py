@@ -7,9 +7,19 @@ Fails closed: without HERMECIOUS_ENV=test and a database whose name ends in
 import os
 from collections.abc import Iterator
 
+import psycopg
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import PostgresDsn
+from redis import Redis
+from sqlalchemy.engine import URL
 
+from app.core.clock import FixedClock
 from app.core.settings import Settings, SettingsError, load_settings
+from app.main import create_app
+from tests.factories import TEST_ORIGIN
+from tests.integration.db import alembic, plain, scratch_database
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -27,3 +37,46 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.fixture(scope="session")
 def settings() -> Iterator[Settings]:
     yield load_settings()
+
+
+@pytest.fixture(scope="session")
+def migrated_database(settings: Settings) -> Iterator[URL]:
+    """One scratch database per session, migrated to head through the real Alembic CLI."""
+    with scratch_database(str(settings.database_url), "app") as url:
+        result = alembic("upgrade", "head", database_url=url)
+        assert result.returncode == 0, result.stderr
+        yield url
+
+
+@pytest.fixture
+def app_settings(settings: Settings, migrated_database: URL) -> Settings:
+    return settings.model_copy(
+        update={"database_url": PostgresDsn(plain(migrated_database)), "allowed_origins_raw": TEST_ORIGIN}
+    )
+
+
+@pytest.fixture
+def clean_state(app_settings: Settings) -> None:
+    """Empty every application table and the test Redis before each test."""
+    with psycopg.connect(str(app_settings.database_url), autocommit=True) as conn:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+            )
+        ]
+        if tables:
+            conn.execute("TRUNCATE " + ", ".join(f'"{t}"' for t in tables) + " CASCADE")
+    Redis.from_url(str(app_settings.redis_url)).flushdb()
+
+
+@pytest.fixture
+def app(app_settings: Settings, clock: FixedClock, clean_state: None) -> Iterator[FastAPI]:
+    application = create_app(app_settings, clock=clock)
+    yield application
+    application.state.engine.dispose()
+
+
+@pytest.fixture
+def client(app: FastAPI) -> TestClient:
+    return TestClient(app, raise_server_exceptions=False)

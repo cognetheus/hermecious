@@ -31,6 +31,7 @@ def test_invalid_config_logs_names_only(
 ) -> None:
     monkeypatch.setattr(worker_module, "NAME_FILE", tmp_path / "name")
     monkeypatch.delenv("HERMECIOUS_ENV", raising=False)
+    monkeypatch.delenv("HERMECIOUS_ALLOWED_ORIGINS", raising=False)
     monkeypatch.setenv("DATABASE_URL", "mysql://app:db-secret-value@db/app")
     monkeypatch.setenv("REDIS_URL", "")
     assert entrypoint() == 1
@@ -39,5 +40,7 @@ def test_invalid_config_logs_names_only(
     assert line["event"] == "config.invalid"
     assert line["level"] == "critical"
     assert line["service"] == service
-    assert line["context"] == {"settings": ["DATABASE_URL", "HERMECIOUS_ENV", "REDIS_URL"]}
+    assert line["context"] == {
+        "settings": ["DATABASE_URL", "HERMECIOUS_ALLOWED_ORIGINS", "HERMECIOUS_ENV", "REDIS_URL"]
+    }
     assert "db-secret-value" not in out and "mysql://" not in out

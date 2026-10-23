@@ -7,6 +7,9 @@ from sqlalchemy import create_engine, pool
 from alembic import context
 from app.core.settings import SettingsError, load_settings
 from app.persistence.base import Base, sqlalchemy_url
+from app.persistence.registry import register_models
+
+register_models()
 
 config = context.config
 if config.config_file_name is not None:

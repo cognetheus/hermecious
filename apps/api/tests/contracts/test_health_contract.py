@@ -2,16 +2,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.health import ReadinessCheck
-from app.core.settings import Settings
 from app.main import create_app
+from tests.factories import make_settings
 
-SETTINGS = Settings.model_validate(
-    {
-        "environment": "test",
-        "database_url": "postgresql://user:db-secret-value@db.invalid:5432/app",
-        "redis_url": "redis://cache.invalid:6379/0",
-    }
-)
+SETTINGS = make_settings()
 
 
 def ok() -> None:

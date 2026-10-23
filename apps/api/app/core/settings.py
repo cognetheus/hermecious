@@ -6,6 +6,7 @@ never echo their values, and the settings repr masks every URL.
 """
 
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, PostgresDsn, RedisDsn, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,16 +30,58 @@ class Settings(BaseSettings):
     log_level: LogLevel = Field(default="INFO", validation_alias="HERMECIOUS_LOG_LEVEL")
     database_url: PostgresDsn
     redis_url: RedisDsn
+    # Comma-separated exact origins allowed to send cookie-authenticated unsafe requests.
+    allowed_origins_raw: str = Field(validation_alias="HERMECIOUS_ALLOWED_ORIGINS")
+    session_cookie_secure: bool = Field(default=False, validation_alias="HERMECIOUS_SESSION_COOKIE_SECURE")
+    session_idle_minutes: int = Field(default=480, ge=5, le=1440, validation_alias="HERMECIOUS_SESSION_IDLE_MINUTES")
+    session_absolute_minutes: int = Field(
+        default=1440, ge=15, le=10080, validation_alias="HERMECIOUS_SESSION_ABSOLUTE_MINUTES"
+    )
+
+    @property
+    def allowed_origins(self) -> frozenset[str]:
+        return frozenset(o.strip() for o in self.allowed_origins_raw.split(",") if o.strip())
+
+    @property
+    def session_cookie_name(self) -> str:
+        return "__Host-hermecious_session" if self.session_cookie_secure else "hermecious_dev_session"
 
     @model_validator(mode="after")
-    def _production_is_strict(self) -> "Settings":
-        if self.environment == "production" and self.log_level == "DEBUG":
-            raise ValueError("HERMECIOUS_LOG_LEVEL")
+    def _validate_security(self) -> "Settings":
+        # Each rule raises the name of the offending setting, never its value.
+        origins = self.allowed_origins
+        if not origins or any(not _is_exact_origin(o) for o in origins):
+            raise ValueError("HERMECIOUS_ALLOWED_ORIGINS")
+        if self.session_idle_minutes > self.session_absolute_minutes:
+            raise ValueError("HERMECIOUS_SESSION_IDLE_MINUTES")
+        if self.environment == "production":
+            if self.log_level == "DEBUG":
+                raise ValueError("HERMECIOUS_LOG_LEVEL")
+            if not self.session_cookie_secure:
+                raise ValueError("HERMECIOUS_SESSION_COOKIE_SECURE")
+            if any(urlsplit(o).scheme != "https" for o in origins):
+                raise ValueError("HERMECIOUS_ALLOWED_ORIGINS")
         return self
 
     def __repr_args__(self) -> Any:
         for name, value in super().__repr_args__():
             yield name, ("***" if name in {"database_url", "redis_url"} else value)
+
+
+def _is_exact_origin(origin: str) -> bool:
+    """scheme://host[:port] with no wildcard, path, query, fragment or credentials."""
+    if "*" in origin:
+        return False
+    parts = urlsplit(origin)
+    return (
+        parts.scheme in {"http", "https"}
+        and bool(parts.hostname)
+        and parts.username is None
+        and parts.path == ""
+        and not parts.query
+        and not parts.fragment
+        and origin == f"{parts.scheme}://{parts.netloc}"
+    )
 
 
 def _setting_names(exc: ValidationError) -> list[str]:

@@ -1,53 +1,21 @@
 """Migration harness against real, per-test scratch databases on the test server."""
 
-import os
-import subprocess
-import sys
-import uuid
 from collections.abc import Iterator
-from pathlib import Path
 
 import psycopg
 import pytest
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL
 
 from app.core.settings import Settings
+from tests.integration.db import alembic, plain, scratch_database
 
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def plain(url: URL) -> str:
-    return url.render_as_string(hide_password=False)
-
-
-def alembic(*args: str, database_url: URL | str) -> subprocess.CompletedProcess[str]:
-    # URL objects repr with a masked password, so failure output never shows it.
-    value = plain(database_url) if isinstance(database_url, URL) else database_url
-    env = {**os.environ, "DATABASE_URL": value}
-    return subprocess.run(  # noqa: S603  # fixed argv, no shell
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+HEAD = "0002"
 
 
 @pytest.fixture
 def scratch_database_url(settings: Settings) -> Iterator[URL]:
-    """A brand-new empty database, dropped afterwards."""
-    server_url = make_url(str(settings.database_url))
-    name = f"hermecious_scratch_{uuid.uuid4().hex[:12]}_test"
-    admin_dsn = plain(server_url.set(drivername="postgresql"))
-    with psycopg.connect(admin_dsn, autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
-    try:
-        yield server_url.set(database=name)
-    finally:
-        with psycopg.connect(admin_dsn, autocommit=True) as conn:
-            conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    with scratch_database(str(settings.database_url)) as url:
+        yield url
 
 
 def current_revision(database_url: URL) -> list[str]:
@@ -61,11 +29,11 @@ def current_revision(database_url: URL) -> list[str]:
 def test_upgrade_head_is_repeatable(scratch_database_url: URL) -> None:
     first = alembic("upgrade", "head", database_url=scratch_database_url)
     assert first.returncode == 0, first.stderr
-    assert current_revision(scratch_database_url) == ["0001"]
+    assert current_revision(scratch_database_url) == [HEAD]
 
     second = alembic("upgrade", "head", database_url=scratch_database_url)
     assert second.returncode == 0, second.stderr
-    assert current_revision(scratch_database_url) == ["0001"]
+    assert current_revision(scratch_database_url) == [HEAD]
 
 
 def test_downgrade_to_base_and_back(scratch_database_url: URL) -> None:
@@ -76,7 +44,7 @@ def test_downgrade_to_base_and_back(scratch_database_url: URL) -> None:
     assert current_revision(scratch_database_url) == []
     again = alembic("upgrade", "head", database_url=scratch_database_url)
     assert again.returncode == 0, again.stderr
-    assert current_revision(scratch_database_url) == ["0001"]
+    assert current_revision(scratch_database_url) == [HEAD]
 
 
 @pytest.mark.parametrize(
@@ -96,3 +64,22 @@ def test_unreachable_database_fails_without_fallback() -> None:
     result = alembic("upgrade", "head", database_url="postgresql://user:pw@127.0.0.1:1/nowhere_test")
     assert result.returncode != 0
     assert "OperationalError" in result.stderr
+
+
+def test_models_match_migrations(scratch_database_url: URL) -> None:
+    """Drift guard: the ORM metadata and the migrated schema describe the same tables."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy import create_engine
+
+    from app.persistence.base import Base, sqlalchemy_url
+    from app.persistence.registry import register_models
+
+    assert alembic("upgrade", "head", database_url=scratch_database_url).returncode == 0
+    register_models()
+    engine = create_engine(sqlalchemy_url(plain(scratch_database_url)))
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True, "compare_server_default": True})
+        diff = compare_metadata(context, Base.metadata)
+    engine.dispose()
+    assert diff == []

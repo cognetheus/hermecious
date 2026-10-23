@@ -11,14 +11,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.request_context import current_request_id
-from app.core.settings import Settings
 from app.main import create_app
+from tests.factories import make_settings
 
 Logs = Callable[[], list[dict[str, Any]]]
 
-SETTINGS = Settings.model_validate(
-    {"environment": "test", "database_url": "postgresql://u:p@db.invalid/app", "redis_url": "redis://r.invalid:6379/0"}
-)
+SETTINGS = make_settings()
 
 
 def app_with_echo() -> FastAPI:

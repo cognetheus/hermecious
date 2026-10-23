@@ -41,7 +41,7 @@ web() { (cd "$root/apps/web" && "$@"); }
 step "repo: verify-setup" bash scripts/verify-setup.sh
 step "repo: verify-setup tests" bash scripts/verify-setup.test.sh
 step "repo: shellcheck" shellcheck scripts/*.sh
-step "repo: compose config" env HERMECIOUS_ENV=test POSTGRES_USER=check POSTGRES_PASSWORD=check POSTGRES_DB=check_test \
+step "repo: compose config" env HERMECIOUS_ENV=test HERMECIOUS_ALLOWED_ORIGINS=http://localhost:3000 POSTGRES_USER=check POSTGRES_PASSWORD=check POSTGRES_DB=check_test \
   docker compose --env-file /dev/null --profile test config --quiet
 
 step "api: install (locked)" api uv sync --locked --quiet

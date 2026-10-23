@@ -12,18 +12,12 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from app.core import errors
-from app.core.settings import Settings
 from app.main import create_app
+from tests.factories import make_settings
 
 Logs = Callable[[], list[dict[str, Any]]]
 
-SETTINGS = Settings.model_validate(
-    {
-        "environment": "test",
-        "database_url": "postgresql://user:db-secret-value@db.invalid:5432/app",
-        "redis_url": "redis://cache.invalid:6379/0",
-    }
-)
+SETTINGS = make_settings()
 
 
 class Payload(BaseModel):
