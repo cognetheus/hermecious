@@ -18,7 +18,7 @@ case "$project" in
 esac
 
 # Disposable credentials; --env-file /dev/null keeps the developer .env out.
-export POSTGRES_USER=hermecious POSTGRES_DB=hermecious_test
+export HERMECIOUS_ENV=test POSTGRES_USER=hermecious POSTGRES_DB=hermecious_test
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 export POSTGRES_PASSWORD
 compose() { docker compose --env-file /dev/null -p "$project" --profile test "$@"; }

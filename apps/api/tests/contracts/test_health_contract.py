@@ -7,6 +7,7 @@ from app.main import create_app
 
 SETTINGS = Settings.model_validate(
     {
+        "environment": "test",
         "database_url": "postgresql://user:db-secret-value@db.invalid:5432/app",
         "redis_url": "redis://cache.invalid:6379/0",
     }
@@ -54,5 +55,6 @@ def test_not_ready_when_redis_fails() -> None:
 
 def test_failed_check_is_logged_without_details(caplog: pytest.LogCaptureFixture) -> None:
     client(postgres=failing, redis=ok).get("/health/ready")
-    assert "dependency=postgres error_class=ConnectionError" in caplog.text
+    [record] = [r for r in caplog.records if r.getMessage() == "health.dependency_unavailable"]
+    assert record.context == {"dependency": "postgres", "error_class": "ConnectionError"}  # type: ignore[attr-defined]
     assert "db-secret-value" not in caplog.text

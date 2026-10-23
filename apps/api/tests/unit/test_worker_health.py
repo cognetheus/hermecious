@@ -34,6 +34,7 @@ def test_unreachable_broker_is_unhealthy(
     name_file.write_text("hermecious-test")
     monkeypatch.setattr(worker, "NAME_FILE", name_file)
     monkeypatch.setattr(worker, "HEALTHCHECK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setenv("HERMECIOUS_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x")
     # Port 1 on loopback refuses connections immediately: Redis is "down".
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")

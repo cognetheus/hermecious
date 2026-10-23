@@ -36,7 +36,10 @@ def ready(request: Request) -> JSONResponse:
             check()
             statuses[name] = "ok"
         except Exception as exc:  # any failure means "not ready"; details stay server-side
-            logger.warning("readiness check failed: dependency=%s error_class=%s", name, type(exc).__name__)
+            logger.warning(
+                "health.dependency_unavailable",
+                extra={"context": {"dependency": name, "error_class": type(exc).__name__}},
+            )
             statuses[name] = "unavailable"
     is_ready = all(status == "ok" for status in statuses.values())
     return JSONResponse(

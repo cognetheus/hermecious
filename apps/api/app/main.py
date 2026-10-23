@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from redis import Redis
 
 from app.api import health
+from app.api.middleware import install_error_handling
 from app.core.settings import Settings
 
 DEPENDENCY_TIMEOUT_SECONDS = 2
@@ -43,4 +44,5 @@ def create_app(settings: Settings, readiness_checks: Mapping[str, health.Readine
         }
     app.state.readiness_checks = readiness_checks
     app.include_router(health.router)
+    install_error_handling(app)
     return app

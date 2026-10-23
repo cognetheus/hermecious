@@ -25,6 +25,7 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 | [`apps/web/`](apps/web/) | Next.js operator UI (Node 22, npm) |
 | [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md) | Stack commands, health contracts, recovery and troubleshooting |
 | [`docs/runbooks/testing.md`](docs/runbooks/testing.md) | `scripts/check.sh`, test layout, integration stack, migrations, time control |
+| [`docs/runbooks/observability.md`](docs/runbooks/observability.md) | JSON logs, redaction, request IDs, error envelope |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: runs `scripts/check.sh` |
 
 ## Setup on a clean machine
