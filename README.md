@@ -6,7 +6,7 @@ It is **not** a bulk-message bot, a scraper of prohibited sources, or a generic 
 
 ## Status
 
-Only subphase **P0.1** (repository foundation: documents, ADR-001 and secrets rules) has been worked on. The repository contains **no application code yet**: there is no API, web UI, database or worker. Those arrive in P0.2 and later, as tracked in [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md).
+Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. There are **no product features yet**: no business tables, authentication, discovery or messaging.
 
 ## Repository layout
 
@@ -19,20 +19,27 @@ Only subphase **P0.1** (repository foundation: documents, ADR-001 and secrets ru
 | [`docs/runbooks/secrets.md`](docs/runbooks/secrets.md) | Secrets rules and leak response |
 | [`.env.example`](.env.example) | Environment variable template (names only for secrets) |
 | [`scripts/verify-setup.sh`](scripts/verify-setup.sh) | Baseline check: required documents and secrets rules |
+| [`compose.yaml`](compose.yaml) | The local development stack |
+| [`apps/api/`](apps/api/) | FastAPI app and RQ worker (Python 3.13, uv) |
+| [`apps/web/`](apps/web/) | Next.js operator UI (Node 22, npm) |
+| [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md) | Stack commands, health contracts, recovery and troubleshooting |
 
 ## Setup on a clean machine
 
-Prerequisites at this stage: `git` and `bash`. Both are preinstalled on macOS, and Linux distributions provide them as standard packages. Docker, Python and Node become prerequisites only in P0.2, and this section will be updated then.
+Prerequisites: `git`, `bash`, `curl`, `openssl` and Docker with the Compose v2 plugin. Python and Node are only needed to work on the code outside containers.
 
 ```sh
 git clone https://github.com/cognetheus/hermecious.git
 cd hermecious
 cp .env.example .env
 chmod 600 .env
+sed -i.bak "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env && rm .env.bak
 bash scripts/verify-setup.sh
+docker compose up --build -d
+bash scripts/smoke-local.sh
 ```
 
-The last command must end with `All checks passed` and exit with status `0`. A `FAIL` line names the rule that was broken. The rules are explained in [`docs/runbooks/secrets.md`](docs/runbooks/secrets.md).
+`verify-setup.sh` must end with `All checks passed` and `smoke-local.sh` with `All smoke checks passed`. A `FAIL` line names what was broken. The secrets rules are explained in [`docs/runbooks/secrets.md`](docs/runbooks/secrets.md). The stack commands (logs, restart, stop, recovery checks) are in [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md).
 
 To run the check's own tests:
 
@@ -42,7 +49,7 @@ bash scripts/verify-setup.test.sh
 
 ## Architecture
 
-See [ADR-001](docs/adr/ADR-001-modular-monolith-and-stack.md). Hermecious is a modular monolith (FastAPI with a separate worker, PostgreSQL as the system of record, Redis as the queue and a Next.js operator UI) deployed with Docker Compose on one VPS.
+See [ADR-001](docs/adr/ADR-001-modular-monolith-and-stack.md). Hermecious is a modular monolith (FastAPI with a separate worker, PostgreSQL as the system of record, Redis as the queue and a Next.js operator UI) deployed with Docker Compose on one VPS. The worker uses RQ ([ADR-009](docs/adr/ADR-009-worker-mechanism-rq.md)).
 
 ## Contributing
 
