@@ -10,7 +10,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P0.2 | Compose (API, web, Postgres, Redis, worker), health/readiness | verified (ADR-009 accepted 2026-10-23) |
 | P0.3 | CI lint/typecheck/test, migrations, fixtures, time control | partially verified: all local gates pass; remote CI run not observed (A2 NOT RUN) |
 | P0.4 | Structured logging, typed errors, config validation, secret masking | verified |
-| P1.1 to P12.4 | See blueprint §4 | not-started |
+| P1.1 | Auth, sessions, CSRF, operator-only access (Batch 02) | verified |
+| P1.2 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
 
@@ -314,3 +315,120 @@ Close A2, then **P0.4** (structured logs, typed errors, validated config, redact
 ### Next
 
 P1.1 (Batch 02). Its preflight needs P0.1–P0.4 VERIFIED; P0.3 is partial only because remote CI is unobserved. The owner directed continuous execution, so P1.1 proceeds and records this gap.
+
+## P1.1 — Persistent authentication, sessions and authorization (2026-10-23)
+
+**Scope:** `docs/phases/HERMECIOUS_BATCH_02_P1.1-P1.3.md` §P1.1 and `OPUS_P1.1_PROMPT.md`. **Base SHA:** `0cb583a`. **Head:** `01886f2`, plus this ledger commit.
+
+### Preflight
+
+| Prerequisite | Status |
+|---|---|
+| P0.1, P0.2, P0.4 | VERIFIED (ledger evidence above) |
+| P0.3 | PARTIALLY VERIFIED: every local gate passes, and A2 (observing remote CI) is NOT RUN. P1.1 proceeded under the owner's explicit "keep working, don't pause" instruction, and this gap is carried forward |
+| Existing conventions reused | Single `Settings`, single declarative `Base` and naming convention, Alembic chain (`0001` → new `0002`), P0.4 error envelope and `X-Request-ID`, JSON logging and redaction, `FixedClock`, `scripts/test-integration.sh`, Compose service names |
+
+### Decisions
+
+ADR-010 records the sequencing correction (P1.1 owns `organizations`/`users`/`auth_sessions`; P1.2 reuses them), the session scheme (`<uuid hex>.<256-bit verifier>`, sha256 at rest, `hmac.compare_digest`), the CSRF scheme (HMAC of the verifier plus exact `Origin`/`Referer`), the login limits (Redis, fail closed), and the role and capability model. Other notes:
+- **Default-deny:** `assert_api_routes_protected(app)` runs in `create_app`. It enumerates routes with FastAPI's public `fastapi.routing.iter_route_contexts`, because **FastAPI 0.162 no longer flattens included routers into `app.routes`**. The first version of the guard silently checked nothing; the contract test caught it, and the fix fails closed for any route it cannot inspect.
+- **Interactive docs and OpenAPI are disabled** (`/docs`, `/redoc`, `/openapi.json` return 404).
+- **Proxy headers are not trusted** (`proxy_headers=False`); the client IP is the direct peer.
+- **`/auth/session-status` was intentionally omitted** in favour of `/auth/me`.
+- **Web:** Next rewrites `/api/v1/*` to `API_INTERNAL_URL` (baked at build time, default `http://api:8000`). `/` checks the session server-side and redirects to `/login`. The CSRF token is held in memory only.
+- **Bookkeeping:** commit `01886f2` also added the owner's new `docs/phases/OPUS_P3.1–P3.3_PROMPT.md` files (unchanged), because they were present when `docs/` was staged.
+
+### Acceptance evidence
+
+| ID | Executed test / command | Result summary | Status |
+|---|---|---|---|
+| AUTH-01 | `test_bootstrap_creates_one_org_and_owner_and_refuses_a_second`, `test_concurrent_bootstraps_create_exactly_one_owner` (4 threads), `test_bootstrap_rejects_weak_passwords` (3), `test_bootstrap_cli_has_no_password_flag_and_needs_a_tty` | 1 org and 1 owner; second attempt refused; concurrent attempts gave `created, refused×3`; `--password` is an unrecognized argument; piped stdin refused (exit 2) | PASS |
+| AUTH-01 | Real clean-room stack: `alembic upgrade head`, then the bootstrap CLI driven through a pty with `expect` | `bootstrap: organization and owner created`; second run `bootstrap: refused: already bootstrapped`; DB has 1 org, `owner \| $argon2id$v=19$m=65536,t=3,p=1$` | PASS |
+| AUTH-02 | `test_bad_password_unknown_email_disabled_user_and_suspended_org_look_identical`, `test_email_lockout_after_five_failures_even_with_correct_password`, `test_ip_budget_limits_enumeration_across_emails` | Four identical 401 bodies, no cookie, no session rows, no email or password in logs. Sixth attempt 429 with `Retry-After` ≤ 900 even with the correct password; other accounts unaffected; window expiry restores login. 31st IP attempt 429 | PASS |
+| AUTH-03 | `test_login_sets_hardened_opaque_cookie_and_me_is_safe`, `test_csrf_endpoint_requires_session_and_returns_bound_token`; real flow through the web origin | `HttpOnly; Path=/; SameSite=lax; Max-Age=86400`, no `Domain`. Body has a safe summary and the CSRF token. DB stores `sha256(verifier)` only. The verifier, cookie and password are absent from logs. No `localStorage` use anywhere in `apps/web` | PASS |
+| AUTH-04 | `test_tampered_cookies_are_rejected_and_cleared` [verifier, unknown_id, malformed, empty], `test_idle_expiry_and_exact_edge`, `test_absolute_expiry_cannot_be_extended_by_activity`, `test_last_seen_is_written_at_most_every_five_minutes` | 401 with cookie cleared, and session rows unchanged (not revoked or prolonged). Idle expiry at exactly `idle_expires_at` → 401. Activity every 4h cannot pass 24h. `last_seen_at` written only after 5 min | PASS |
+| AUTH-05 | `test_logout_revokes_immediately_and_replay_fails`, `test_disabling_the_user_revokes_live_sessions`, `test_suspending_the_organization_blocks_sessions`, `test_credential_change_invalidates_older_sessions`; real flow | Replaying the old cookie gives 401 on `/me` and logout. Disabled user and suspended org give 401 with the session revoked. Credential change rejects older sessions | PASS |
+| AUTH-06 | `test_logout_without_valid_csrf_and_origin_is_403_and_changes_nothing` [missing-token, wrong-token, cross-origin, null-origin, no-origin, cross-referer, lookalike], `test_same_origin_referer_is_accepted_when_origin_is_stripped`, `test_csrf_token_from_a_rotated_session_is_rejected`, `test_login_csrf_defences` | 403 envelope; `revoked_at`, `last_seen_at` and `idle_expires_at` unchanged, and the session still works. Cross-site or origin-less login 403; form and text/plain login 400; no session rows | PASS |
+| AUTH-07 | `test_role_matrix_denies_lower_roles_before_any_effect` (owner, operator, observer × read/mutate/draft/publish), `test_client_supplied_organization_is_ignored`, `test_anonymous_requests_never_reach_handlers`, `test_route_protection.py` (4 contract tests) | Owner: all 200. Operator: read and draft 200; mutate and publish 403. Observer: read only. Handler side effects are recorded only for allowed calls. `?organization_id=<other>` is ignored. Every private route 401s anonymously. An unprotected route fails startup | PASS |
+| AUTH-08 | `test_sessions_survive_an_api_restart`, `test_redis_outage_fails_login_closed_but_keeps_sessions`, `test_database_outage_is_a_safe_503`. Real stack: `docker compose restart api`, then `docker compose stop redis` | `/me` 200 after an API restart. Login 503 `DEPENDENCY_UNAVAILABLE` while Redis is down, while the existing session still gets 200; login 200 after Redis returns. DB down gives 503 with no secret. Idle/absolute limits as in AUTH-04 | PASS |
+| AUTH-09 | `test_auth_units.py`: `test_unsafe_production_configurations_are_rejected` [insecure-cookie, http-origin, mixed-origins, debug-logging], `test_origins_must_be_exact_in_every_environment` (10 cases including `*`), `test_idle_cannot_exceed_absolute` | Each is rejected with the offending setting's name only | PASS |
+| AUTH-10 | `bash scripts/check.sh` | 15/15 PASS (API unit + contract 122 tests; integration 55; web lint/typecheck/test/build). `scripts/smoke-local.sh` PASS on the rebuilt dev stack, and the dev DB migrated `0001 -> 0002` | PASS |
+
+### Real end-to-end flow (throwaway stack `hermecious-p11e2e`, web origin `http://localhost:13001`; removed afterwards with `down -v`)
+
+1. Anonymous `/` → 307 to `/login`.
+2. Wrong password → 401. Cross-site login → 403.
+3. Login through the web proxy → 200, with `set-cookie: hermecious_dev_session=<id>.<verifier>; HttpOnly; Max-Age=86400; Path=/; SameSite=lax`.
+4. `/` renders "Signed in as E2E Owner".
+5. Logout without CSRF → 403.
+6. `docker compose restart api`, then `/me` → 200.
+7. Redis stopped: login → 503 and `/me` → 200. Redis back: login → 200.
+8. Logout with CSRF → 204, then replay `/me` → 401 and `/` → 307.
+9. Log scan: password 0, verifier 0, email 0, CSRF token 0.
+
+Auth events seen: `csrf_rejected`×2, `login_denied`, `login_succeeded`×2, `logout`, `session_rejected`×2, `session_revoked`.
+
+**Argon2id benchmark:** verify median 107 ms on the host and 108 ms in the container (t=3, m=64 MiB, p=1).
+
+### Negative tests and failure-state observations
+
+- **Parallel logins:** 5 threads → 5 distinct sessions.
+- **Logout racing a request:** the request gets 200 or 401, and afterwards the session is unusable.
+- **Session fixation:** the presented session is revoked and the old cookie gives 401.
+- **Clock-edge expiry:** see AUTH-04.
+- **Log injection in the email field:** no forged `auth.login_succeeded` event.
+- **Malformed cookie:** see AUTH-04.
+- **Transient DB or Redis outages:** see AUTH-08.
+- **Mutation check:** making the CSRF check always pass and `verifier_matches` always return True made 4 integration tests fail (tampered-verifier, missing-token, wrong-token, rotated-token). **Process note:** the restore with `git checkout` failed because the files were not yet tracked, so I reverted by hand, confirmed no `MUTATION` markers remained, and reran the suite (55 passed) before committing. Lesson: commit before mutating.
+- **Intermittent failure found and fixed:** pytest's unraisable-exception hook failed one `check.sh` run because of an unclosed Redis socket. Causes: unclosed test Redis clients, and the app never closing its Redis or engine. Fixed with `close_app()`, a lifespan hook and closing every test connection. **Three consecutive integration runs:** 55 passed each, 0 unraisable.
+- **pty bootstrap automation:** a first attempt that piped input into `script` hung, because the input arrived before `getpass` read it, and it echoed a throwaway test password into the transcript. Nothing was created with that password, it was rotated, and the clean room was destroyed. Final automation used `expect`, which waits for each prompt.
+
+### Migration and data safety
+
+`0002` creates three tables: FKs, `users(organization_id, email_canonical)` unique, CHECKs (status, role, lowercase email, verifier hash format, idle ≤ absolute, absolute > issued), and indexes on `auth_sessions(user_id)` and `(absolute_expires_at)`.
+- Upgrade/downgrade: `test_downgrade_to_base_and_back` (head → base → head) passes on a scratch DB.
+- Model/schema drift: `test_models_match_migrations` reports `compare_metadata` diff `[]`.
+- The dev DB is migrated to `0002`. No owner was created there: the owner runs the bootstrap themselves (runbook).
+
+### Security and privacy review
+
+- **Identity source:** organization and role come only from the DB row.
+- **No CORS, no JWT, no `localStorage`.**
+- **Cookie:** `HttpOnly` + `SameSite=Lax`; production forces `__Host-` + `Secure` + HTTPS origins.
+- **CSRF:** verified before any write.
+- **Enumeration:** uniform 401 bodies, and a dummy-hash verification for unknown users.
+- **Rate limiting:** limits fail closed.
+- **Logs:** no email, password, cookie, verifier or CSRF token (asserted).
+- **Bootstrap:** never prints personal data.
+- **Residual risks:**
+  - A Redis restart resets the rate-limit counters.
+  - A wrong-verifier probe does not revoke the session, by design (DoS avoidance), so brute force relies on the 256-bit verifier.
+  - The login form is not covered by browser E2E (P7.5).
+
+### Changed files (with reasons)
+
+| File | Reason |
+|---|---|
+| `apps/api/alembic/versions/0002_identity.py` | Identity tables |
+| `apps/api/app/auth/{models,passwords,tokens,rate_limit,service,dependencies,routes,bootstrap}.py` | Auth implementation |
+| `apps/api/app/persistence/{db,registry}.py` | Session factory and `DbSession` dependency; model registration for Alembic |
+| `apps/api/app/core/settings.py` | Origins, cookie and session lifetime settings with production rules |
+| `apps/api/app/main.py`, `__main__.py` | Wiring, route guard, lifespan cleanup, `proxy_headers=False` |
+| `apps/api/app/workers/worker.py` | Health check closes its Redis connection |
+| `apps/api/alembic/env.py` | Registers models |
+| `apps/api/pyproject.toml`, `uv.lock` | argon2-cffi 25.1.0; tests may hold fixed passwords (S105/S106) |
+| `apps/api/tests/**` | `factories.py`; unit `test_auth_units.py`; contract `test_route_protection.py`; integration `conftest.py`, `db.py`, `auth_helpers.py`, `test_auth.py` (52 tests), drift test; updates for the new settings |
+| `apps/web/{next.config.ts,lib/api.ts,app/page.tsx,app/login/page.tsx,app/logout-button.tsx}` | Login UI and protected shell |
+| `compose.yaml`, `.env.example`, `scripts/{check,test-integration}.sh` | New settings and `API_INTERNAL_URL` |
+| `docs/adr/ADR-010-identity-and-server-sessions.md`, `docs/runbooks/auth.md`, `README.md`, `docs/runbooks/local-development.md` | Documentation |
+
+### Rollback
+
+- **Disposable DB:** `alembic downgrade 0001`.
+- **Data-bearing DB:** back up, review users and live sessions, prefer a forward fix, and never re-open private routes anonymously.
+- **Code:** `git revert 01886f2 5fecce7`.
+- **Never** `docker compose down -v`.
+
+### VERDICT: VERIFIED
+
+The P0.3 remote-CI observation gap is carried forward. P1.2 is next (owner-directed continuous execution).
