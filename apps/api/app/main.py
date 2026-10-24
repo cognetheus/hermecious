@@ -5,6 +5,7 @@ import psycopg
 from fastapi import FastAPI
 from redis import Redis
 
+from app.accounts import routes as account_routes
 from app.api import health
 from app.api.middleware import install_error_handling
 from app.auth import routes as auth_routes
@@ -80,6 +81,7 @@ def create_app(
     app.include_router(auth_routes.public_router)
     app.include_router(auth_routes.router)
     app.include_router(offer_routes.router)
+    app.include_router(account_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

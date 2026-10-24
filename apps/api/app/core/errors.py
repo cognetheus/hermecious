@@ -95,6 +95,12 @@ class NotFound(AppError):
     code, status_code = ErrorCode.NOT_FOUND, 404
 
 
+class Unprocessable(AppError):
+    """Well-formed request that violates a domain rule (e.g. an invalid state transition)."""
+
+    code, status_code = ErrorCode.VALIDATION_ERROR, 422
+
+
 class Conflict(AppError):
     code, status_code = ErrorCode.CONFLICT, 409
 

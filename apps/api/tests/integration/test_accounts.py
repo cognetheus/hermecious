@@ -25,6 +25,14 @@ from tests.integration.lahore_fixtures import (
     website_source,
 )
 
+RIGHTS_MESSAGES = {
+    "not on the allowlist",
+    "storage class is not permitted",
+    "do not permit this",
+    "requires a stable external key",
+    "do not permit storing a verbatim excerpt",
+}
+
 
 def count(app: FastAPI, model: type[Any]) -> int:
     with db(app) as session:
@@ -277,7 +285,9 @@ def test_forbidden_sources_are_rejected_and_nothing_persists(
     app: FastAPI, overrides: dict[str, Any], message: str
 ) -> None:
     actor = new_org_actor(app)
-    with pytest.raises(InvalidRequest, match=message):
+    # Rights refusals are 403 (P1.4); malformed or unsafe URLs stay 400.
+    expected = Forbidden if message in RIGHTS_MESSAGES else InvalidRequest
+    with pytest.raises(expected, match=message):
         website_source(app, actor, **overrides)
     assert count(app, SourceRecord) == 0
 
@@ -319,7 +329,8 @@ def test_excerpt_rights_and_bounds(app: FastAPI, storage_class: str, excerpt: st
     actor = new_org_actor(app)
     account = school_account(app, actor)
     source = website_source(app, actor, storage_class=storage_class)
-    with pytest.raises(InvalidRequest, match=message):
+    expected = Forbidden if message in RIGHTS_MESSAGES else InvalidRequest
+    with pytest.raises(expected, match=message):
         fact(app, actor, account.id, source_record_id=source.id, evidence_excerpt=excerpt)
     assert count(app, AccountFact) == 0
 

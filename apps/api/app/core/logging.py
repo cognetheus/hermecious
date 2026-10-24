@@ -29,12 +29,14 @@ MAX_ITEMS = 50
 # Context keys whose values may be logged (still scrubbed). Everything else is redacted.
 SAFE_CONTEXT_KEYS = frozenset(
     {
+        "account_id",
         "attempt",
         "count",
         "dependency",
         "duration_ms",
         "error_class",
         "error_code",
+        "fact_id",
         "job_id",
         "job_type",
         "method",

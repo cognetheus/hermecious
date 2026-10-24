@@ -47,9 +47,13 @@ def _aware(value: datetime, field: str) -> datetime:
     return value
 
 
-def _commit(db: Session, conflict_message: str) -> None:
+def _commit(db: Session, conflict_message: str, commit: bool = True) -> None:
+    """Commit (default) or just flush, so callers can compose one larger transaction."""
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError:
         db.rollback()
         raise Conflict(conflict_message) from None
@@ -58,6 +62,8 @@ def _commit(db: Session, conflict_message: str) -> None:
 def _policy(call: Any, *args: Any, **kwargs: Any) -> Any:
     try:
         return call(*args, **kwargs)
+    except policy.RightsViolation as exc:
+        raise Forbidden(str(exc)) from None
     except policy.PolicyViolation as exc:
         raise InvalidRequest(str(exc)) from None
 
@@ -89,6 +95,7 @@ def create_account(
     name: str,
     city: str,
     locality: str | None = None,
+    commit: bool = True,
 ) -> Account:
     _require(actor, Capability.MUTATE)
     canonical = _policy(policy.clean_text, name, "name", 250)
@@ -108,7 +115,7 @@ def create_account(
         updated_at=now,
     )
     db.add(account)
-    _commit(db, "Account could not be created")
+    _commit(db, "Account could not be created", commit)
     return account
 
 
@@ -125,6 +132,7 @@ def add_source_record(
     external_key: str | None = None,
     payload_reference: str | None = None,
     expires_at: datetime | None = None,
+    commit: bool = True,
 ) -> SourceRecord:
     _require(actor, Capability.MUTATE)
     _policy(policy.check_storage, provider, storage_class, payload_reference, external_key)
@@ -148,7 +156,7 @@ def add_source_record(
         created_at=now,
     )
     db.add(record)
-    _commit(db, "A source with this provider and external key already exists")
+    _commit(db, "A source with this provider and external key already exists", commit)
     return record
 
 
@@ -194,6 +202,10 @@ def add_account_fact(
     source_record_id: uuid.UUID | None = None,
     expires_at: datetime | None = None,
     evidence_excerpt: str | None = None,
+    recorded_by: uuid.UUID | None = None,
+    supersedes_fact_id: uuid.UUID | None = None,
+    correction_reason: str | None = None,
+    commit: bool = True,
 ) -> AccountFact:
     _require(actor, Capability.MUTATE)
     account = _account(db, actor, account_id)
@@ -238,9 +250,12 @@ def add_account_fact(
         observed_at=observed_at,
         expires_at=expires_at,
         created_at=now,
+        supersedes_fact_id=supersedes_fact_id,
+        correction_reason=correction_reason,
+        recorded_by=recorded_by,
     )
     db.add(fact)
-    _commit(db, "Fact could not be recorded")
+    _commit(db, "This fact was already corrected; correct its latest version", commit)
     return fact
 
 
@@ -267,6 +282,17 @@ class FactView:
     source: SourceView | None
     # Stale when the fact or its source has passed its expiry: never present it as current.
     is_stale: bool
+    expires_at: datetime | None = None
+    created_at: datetime | None = None
+    recorded_by: uuid.UUID | None = None
+    # Correction chain: a fact with a successor is history, not the current assertion.
+    supersedes_fact_id: uuid.UUID | None = None
+    superseded_by_fact_id: uuid.UUID | None = None
+    correction_reason: str | None = None
+
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_by_fact_id is None
 
 
 @dataclass(frozen=True)
@@ -297,6 +323,7 @@ def get_account_with_evidence(db: Session, *, actor: Actor, clock: Clock, accoun
         .where(AccountFact.organization_id == actor.organization_id, AccountFact.account_id == account.id)
         .order_by(AccountFact.claim_type, AccountFact.observed_at.desc())
     ).all()
+    successors = {fact.supersedes_fact_id: fact.id for fact, _ in rows if fact.supersedes_fact_id is not None}
     facts = []
     for fact, source in rows:
         expired = [t for t in (fact.expires_at, source.expires_at if source else None) if t is not None]
@@ -321,6 +348,12 @@ def get_account_with_evidence(db: Session, *, actor: Actor, clock: Clock, accoun
                 if source
                 else None,
                 is_stale=any(t <= now for t in expired),
+                expires_at=fact.expires_at,
+                created_at=fact.created_at,
+                recorded_by=fact.recorded_by,
+                supersedes_fact_id=fact.supersedes_fact_id,
+                superseded_by_fact_id=successors.get(fact.id),
+                correction_reason=fact.correction_reason,
             )
         )
     return AccountEvidence(account=account, aliases=aliases, facts=facts)

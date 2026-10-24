@@ -108,6 +108,13 @@ class Account(Base):
         CheckConstraint("version >= 1", name="version_positive"),
         Index("ix_accounts_org_vertical_city_status", "organization_id", "vertical_id", "city", "status"),
         Index("ix_accounts_org_normalized_name", "organization_id", "normalized_name"),
+        Index(
+            "ix_accounts_org_name_prefix",
+            "organization_id",
+            "normalized_name",
+            postgresql_ops={"normalized_name": "text_pattern_ops"},
+        ),
+        Index("ix_accounts_org_updated_id", "organization_id", "updated_at", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -213,6 +220,31 @@ class AccountFact(Base):
         Index(
             "ix_account_facts_org_account_claim_observed", "organization_id", "account_id", "claim_type", "observed_at"
         ),
+        # P1.4 corrections: a successor fact links to the fact it corrects, with a reason.
+        UniqueConstraint("organization_id", "id"),
+        ForeignKeyConstraint(
+            ["organization_id", "supersedes_fact_id"],
+            ["account_facts.organization_id", "account_facts.id"],
+            name="fk_account_facts_org_supersedes",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "recorded_by"],
+            ["users.organization_id", "users.id"],
+            name="fk_account_facts_org_recorder",
+        ),
+        CheckConstraint("(supersedes_fact_id IS NULL) = (correction_reason IS NULL)", name="correction_has_reason"),
+        CheckConstraint("supersedes_fact_id IS NULL OR supersedes_fact_id <> id", name="not_self_correcting"),
+        CheckConstraint(
+            "correction_reason IS NULL OR char_length(correction_reason) BETWEEN 3 AND 1000", name="reason_length"
+        ),
+        # At most one successor per fact: two racing corrections cannot both become current.
+        Index(
+            "uq_account_facts_org_supersedes",
+            "organization_id",
+            "supersedes_fact_id",
+            unique=True,
+            postgresql_where=text("supersedes_fact_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -227,3 +259,32 @@ class AccountFact(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    supersedes_fact_id: Mapped[uuid.UUID | None]
+    correction_reason: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[uuid.UUID | None]
+
+
+class ActionAudit(Base):
+    """Append-only record of who did what to which target (blueprint §2 `action_audits`)."""
+
+    __tablename__ = "action_audits"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "actor_user_id"],
+            ["users.organization_id", "users.id"],
+            name="fk_action_audits_org_actor",
+        ),
+        CheckConstraint("action_type ~ '^[a-z][a-z0-9_.]{2,79}$'", name="action_type_format"),
+        CheckConstraint("target_type ~ '^[a-z][a-z0-9_]{2,39}$'", name="target_type_format"),
+        Index("ix_action_audits_org_target", "organization_id", "target_type", "target_id", "recorded_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    actor_user_id: Mapped[uuid.UUID]
+    action_type: Mapped[str] = mapped_column(String(80))
+    target_type: Mapped[str] = mapped_column(String(40))
+    target_id: Mapped[uuid.UUID]
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
