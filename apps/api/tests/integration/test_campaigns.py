@@ -363,7 +363,7 @@ def test_campaign_08_pause_cancel_and_edits_preserve_blocks(
         json={"expected_revision": 1, "rules": {"decisions": ["contact_now", "investigate"]}},
         headers=mutation_headers(operator),
     ).json()
-    member = edited["members"][0]
+    member = next(m for m in edited["members"] if m["stage"] == "approved_for_drafting")
     assert member["stale"] == ["rules_changed"] and member["drafting_blocked"] is True
     stale_edit = client.patch(
         f"/api/v1/campaigns/{campaign['id']}",
@@ -386,7 +386,8 @@ def test_campaign_08_pause_cancel_and_edits_preserve_blocks(
             session, actor=org.actor, clock=app.state.clock, offer_id=offer, expected_version=current.version
         )
     view = client.get(f"/api/v1/campaigns/{campaign['id']}").json()
-    assert view["offer_current"] is False and "offer_changed" in view["members"][0]["stale"]
+    approved = next(m for m in view["members"] if m["stage"] == "approved_for_drafting")
+    assert view["offer_current"] is False and "offer_changed" in approved["stale"]
     cancelled = transition(client, operator, campaign["id"], "cancel").json()
     assert cancelled["status"] == "cancelled"
     assert transition(client, operator, campaign["id"], "pause").status_code == 409

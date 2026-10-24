@@ -131,9 +131,10 @@ def test_school_03_04_05_notices_never_become_process_tool_or_consent_claims(
     assert "do not show how payments are reconciled" in signals["fee_process"]["caveat"]
     assert "not consent" in signals["public_contact_route"]["caveat"]
     assert _tables(app) == tables_before
-    assert not any(
-        t for t in tables_before if any(w in t for w in ("campaign", "contact", "message", "outbound", "task"))
-    )
+    # Campaign planning tables arrive in P4.1; the brief creates no rows there and no messaging/contact tables exist.
+    assert not any(t for t in tables_before if any(w in t for w in ("contact", "message", "outbound", "task")))
+    with db(app) as session:
+        assert session.scalar(text("SELECT count(*) FROM campaign_accounts")) == 0
 
 
 def _tables(app: FastAPI) -> list[str]:

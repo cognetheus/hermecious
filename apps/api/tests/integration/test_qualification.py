@@ -128,8 +128,11 @@ def test_qualify_01_03_four_dimensions_with_versions_and_contact_now_is_priority
     again = assess(client, operator, account, offer)
     assert (again.status_code, again.json()["id"]) == (200, body["id"])
     assert _tables(app) == tables_before  # no campaign, outreach, permission, message or task tables or rows
-    assert not [t for t in tables_before if any(w in t for w in ("campaign", "outreach", "permission", "message",
-                                                                 "task"))]  # fmt: skip
+    # P4.1 later adds campaign *planning* tables; assessment must never create rows there, and no messaging,
+    # outreach or permission tables exist at all.
+    assert not [t for t in tables_before if any(w in t for w in ("outreach", "permission", "message", "task"))]
+    with db(app) as session:
+        assert session.scalar(text("SELECT count(*) FROM campaign_accounts")) == 0
 
 
 # --- QUALIFY-02 ------------------------------------------------------------------------------------------------
