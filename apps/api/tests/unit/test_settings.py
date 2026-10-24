@@ -11,13 +11,14 @@ VALID = {
     "HERMECIOUS_ALLOWED_ORIGINS": "http://localhost:3000",
 }
 
+KEYS = "k1:contact-key-secret-0123456789abcdef0123"
 
 SetEnv = Callable[..., None]
 
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> SetEnv:
-    for name in [*VALID, "HERMECIOUS_LOG_LEVEL", "HERMECIOUS_SESSION_COOKIE_SECURE"]:
+    for name in [*VALID, "HERMECIOUS_LOG_LEVEL", "HERMECIOUS_SESSION_COOKIE_SECURE", "HERMECIOUS_CONTACT_HMAC_KEYS"]:
         monkeypatch.delenv(name, raising=False)
 
     def set_env(**values: str) -> None:
@@ -62,7 +63,14 @@ def test_unknown_environment_is_rejected(env: SetEnv) -> None:
 
 
 def test_production_rejects_debug_logging(env: SetEnv) -> None:
-    env(**{**VALID, "HERMECIOUS_ENV": "production", "HERMECIOUS_LOG_LEVEL": "DEBUG"})
+    env(
+        **{
+            **VALID,
+            "HERMECIOUS_ENV": "production",
+            "HERMECIOUS_LOG_LEVEL": "DEBUG",
+            "HERMECIOUS_CONTACT_HMAC_KEYS": KEYS,
+        }
+    )
     with pytest.raises(SettingsError) as excinfo:
         load_settings()
     assert excinfo.value.names == ["HERMECIOUS_LOG_LEVEL"]
@@ -76,11 +84,35 @@ def test_production_accepts_info_logging(env: SetEnv) -> None:
             "HERMECIOUS_LOG_LEVEL": "INFO",
             "HERMECIOUS_SESSION_COOKIE_SECURE": "true",
             "HERMECIOUS_ALLOWED_ORIGINS": "https://ops.example.com",
+            "HERMECIOUS_CONTACT_HMAC_KEYS": KEYS,
         }
     )
     settings = load_settings()
     assert settings.environment == "production"
     assert settings.session_cookie_name == "__Host-hermecious_session"
+    assert "contact-key-secret" not in repr(settings)
+
+
+def test_contact_keys_required_in_production_and_well_formed(env: SetEnv) -> None:
+    """P4.3: contact addresses are digested with an operator-held key; production never uses the dev key."""
+    production = {
+        **VALID,
+        "HERMECIOUS_ENV": "production",
+        "HERMECIOUS_SESSION_COOKIE_SECURE": "true",
+        "HERMECIOUS_ALLOWED_ORIGINS": "https://ops.example.com",
+    }
+    env(**production)
+    with pytest.raises(SettingsError) as excinfo:
+        load_settings()
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
+    env(**production, HERMECIOUS_CONTACT_HMAC_KEYS="")  # blank (compose default) is unset
+    with pytest.raises(SettingsError) as excinfo:
+        load_settings()
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
+    env(**production, HERMECIOUS_CONTACT_HMAC_KEYS="k1:too-short")
+    with pytest.raises(SettingsError) as excinfo:
+        load_settings()
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
 
 
 def test_repr_masks_connection_urls(env: SetEnv) -> None:

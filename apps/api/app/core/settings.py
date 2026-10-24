@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, PostgresDsn, RedisDsn, ValidationError, model_validator
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     session_absolute_minutes: int = Field(
         default=1440, ge=15, le=10080, validation_alias="HERMECIOUS_SESSION_ABSOLUTE_MINUTES"
     )
+    # P4.3 (ADR-022): "key_id:secret[,key_id:secret...]", newest first. Contact addresses are stored only as keyed
+    # HMAC digests. Required in production; development and test fall back to a fixed, non-secret dev key.
+    contact_hmac_keys: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_CONTACT_HMAC_KEYS")
+    # Global outreach stop: when true, every channel-eligibility decision is `deny` (kill_switch_engaged).
+    outreach_kill_switch: bool = Field(default=False, validation_alias="HERMECIOUS_OUTREACH_KILL_SWITCH")
+
+    @field_validator("contact_hmac_keys", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
 
     @property
     def allowed_origins(self) -> frozenset[str]:
@@ -84,7 +94,16 @@ class Settings(BaseSettings):
                 parse_bbox(self.osm_bbox or "")
             except BBoxError:
                 raise ValueError("HERMECIOUS_OSM_BBOX") from None
+        if self.contact_hmac_keys is not None:
+            from app.contacts.addresses import KeyringError, parse_keyring  # noqa: PLC0415
+
+            try:
+                parse_keyring(self.contact_hmac_keys.get_secret_value())
+            except KeyringError:
+                raise ValueError("HERMECIOUS_CONTACT_HMAC_KEYS") from None
         if self.environment == "production":
+            if self.contact_hmac_keys is None:
+                raise ValueError("HERMECIOUS_CONTACT_HMAC_KEYS")
             if self.log_level == "DEBUG":
                 raise ValueError("HERMECIOUS_LOG_LEVEL")
             if not self.session_cookie_secure:

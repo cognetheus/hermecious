@@ -1,0 +1,58 @@
+{
+ "version": "whatsapp-fixtures-1.0",
+ "note": "Synthetic test data only. Zero-filled placeholder numbers; no real school, person or provider. Signed so edits are ignored.",
+ "templates": [
+  {
+   "id": "fx_tpl_marketing_intro_v1",
+   "category": "marketing",
+   "provider_status": "approved",
+   "locale": "en-PK",
+   "synthetic": true,
+   "signature": "72ab4ccb2ae45fe7db5995fe92fb51e14f967072a5190ab8f93ab2b987db779a"
+  },
+  {
+   "id": "fx_tpl_utility_update_v1",
+   "category": "utility",
+   "provider_status": "approved",
+   "locale": "en-PK",
+   "synthetic": true,
+   "signature": "b768f87eb4a0941b9861ba47b84fce569c251932a34dd527f54c1c6e9565e4b9"
+  },
+  {
+   "id": "fx_tpl_marketing_pending_v1",
+   "category": "marketing",
+   "provider_status": "pending",
+   "locale": "en-PK",
+   "synthetic": true,
+   "signature": "ef4bca33e0285bc94194425960367f91bfb59d4a2b8d1967982835af1937dadb"
+  },
+  {
+   "id": "fx_tpl_marketing_rejected_v1",
+   "category": "marketing",
+   "provider_status": "rejected",
+   "locale": "en-PK",
+   "synthetic": true,
+   "signature": "b44a2887624604b7084f5d1b841f8521675b7542a53663007088f4dbd1139af3"
+  }
+ ],
+ "inbound": [
+  {
+   "id": "fx_inbound_hello_v1",
+   "address": "+920000000101",
+   "received_at": "2026-10-23T05:00:00+00:00",
+   "text_kind": "greeting",
+   "text": "hello",
+   "synthetic": true,
+   "signature": "962d4524a2009ece75d7c871cffa9c990aaf984b331d5a0579833ba687de6663"
+  },
+  {
+   "id": "fx_inbound_fee_question_v1",
+   "address": "+920000000102",
+   "received_at": "2026-10-23T05:00:00+00:00",
+   "text_kind": "service_question",
+   "text": "What are your office hours?",
+   "synthetic": true,
+   "signature": "8af939acddd9104c7f4710429190f6ce8a27d8efdbff0c0f4bfda22a037edeaa"
+  }
+ ]
+}

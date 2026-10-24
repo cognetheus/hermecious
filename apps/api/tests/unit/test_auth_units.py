@@ -77,6 +77,7 @@ def production(**overrides: object) -> dict[str, object]:
         "environment": "production",
         "session_cookie_secure": True,
         "allowed_origins_raw": "https://ops.example.com",
+        "contact_hmac_keys": "k1:" + "x" * 32,
         **overrides,
     }
 

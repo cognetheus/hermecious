@@ -428,4 +428,7 @@ def test_campaign_09_auth_scope_injection_and_zero_sends(app: FastAPI, client: T
     assert count(app, OutboxEvent) == outbox
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
-    assert not {t for t in tables if any(w in t for w in ("message", "contact", "permission", "outreach"))}
+    assert not {t for t in tables if any(w in t for w in ("message", "outreach", "send", "outbound"))}
+    with db(app) as session:  # P4.3 adds contact/permission tables (ADR-022); campaigns create no rows there
+        assert session.scalar(text("SELECT count(*) FROM contacts")) == 0
+        assert session.scalar(text("SELECT count(*) FROM contact_permissions")) == 0

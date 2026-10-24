@@ -67,7 +67,7 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
   return (
     <main>
       <p>
-        <Link href="/accounts">All accounts</Link>
+        <Link href="/accounts">All accounts</Link> · <Link href={`/accounts/${account.id}/contacts`}>Contacts and channel eligibility</Link>
       </p>
       <h1>{account.canonical_name}</h1>
       <section aria-labelledby="identity">

@@ -130,7 +130,9 @@ def test_qualify_01_03_four_dimensions_with_versions_and_contact_now_is_priority
     assert _tables(app) == tables_before  # no campaign, outreach, permission, message or task tables or rows
     # P4.1 later adds campaign *planning* tables; assessment must never create rows there, and no messaging,
     # outreach or permission tables exist at all.
-    assert not [t for t in tables_before if any(w in t for w in ("outreach", "permission", "message", "task"))]
+    assert not [t for t in tables_before if any(w in t for w in ("outreach", "message", "task", "send"))]
+    with db(app) as session:  # P4.3 adds contact_permissions (ADR-022); assessing never grants one
+        assert session.scalar(text("SELECT count(*) FROM contact_permissions")) == 0
     with db(app) as session:
         assert session.scalar(text("SELECT count(*) FROM campaign_accounts")) == 0
 
