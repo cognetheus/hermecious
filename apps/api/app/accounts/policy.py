@@ -53,6 +53,8 @@ PROVIDERS: dict[str, ProviderPolicy] = {
     "google_places": ProviderPolicy(frozenset({StorageClass.METADATA_ONLY}), requires_external_key=True),
     # Deterministic test fixtures.
     "fixture": ProviderPolicy(ALL_CLASSES, allow_payload=True),
+    # P2.1 synthetic discovery fixture: provenance only (no payloads), stable provider-scoped keys.
+    "fixture_lahore_schools": ProviderPolicy(ALL_CLASSES, requires_external_key=True),
 }
 
 _BLOCKED_HOSTS = {"localhost", "metadata.google.internal", "metadata", "instance-data"}

@@ -47,14 +47,20 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 
 
 def _audit(
-    db: Session, actor: Actor, clock: Clock, action: str, account_id: uuid.UUID, details: dict[str, Any]
+    db: Session,
+    actor: Actor,
+    clock: Clock,
+    action: str,
+    account_id: uuid.UUID,
+    details: dict[str, Any],
+    target_type: str = "account",
 ) -> None:
     db.add(
         ActionAudit(
             organization_id=actor.organization_id,
             actor_user_id=actor.user_id,
             action_type=action,
-            target_type="account",
+            target_type=target_type,
             target_id=account_id,
             details_json=details,
             request_id=current_request_id(),
