@@ -1735,3 +1735,83 @@ These were test or expectation errors; no rubric output or label changed:
 2. A named human reviewer to adjudicate every displayed claim in `/quality`.
 
 **P4.1 is UNBLOCKED as engineering, but must honour the CLOSED gate:** no real enrollment until EVAL-07 passes.
+
+## P4.1 — Campaign foundations and candidate enrollment (2026-10-24)
+
+**Scope:** `OPUS_P4.1_PROMPT.md` (Batch 06 absent). **Base:** P3.4 docs head. **Head:** `1ac039f` (code and tests), plus the docs and ledger commit. **Migration:** `0014_campaigns`; the dev database is upgraded to `0014 (head)`.
+
+### Gate
+
+- P3.3 is VERIFIED, and the P3.4 evaluator contract is implemented.
+- **The P3.4 real 30-account review (EVAL-07) is BLOCKED, so the gate is CLOSED.** As the prompt requires:
+  - **live** approval and activation are refused;
+  - only **fixture** (synthetic, test-only, non-production) campaigns can approve, and they never activate.
+
+### Design decisions (ADR-020)
+
+- **Campaigns** pin a published offer revision and carry typed `campaign-rules-1.0` rules, downward-only local budgets and a mode (live or fixture).
+- **Preview** is a pure read with per-account reasons, a stable order, item and preview digests, and digest-guarded pagination.
+- **Approve-for-drafting:**
+  - requires the campaign revision, the previewed item digest and an idempotency key;
+  - re-checks status, gate or mode, offer, qualification and membership under the campaign lock;
+  - concurrent approvals converge;
+  - uses an atomic Asia/Karachi-day budget.
+- **Exclusion always wins.**
+- **Staleness:** members are flagged `stale` / `drafting_blocked` when rules, offer, assessment or evidence change.
+- **No contact anywhere:** `contact_authorized: false`, no messages, permissions or outbox events, and the notice "Channel permission not checked — do not contact from this screen."
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| CAMPAIGN-01 | `test_campaign_01_draft_campaign_pins_the_published_offer_and_is_audited` | 201: draft, live, revision 1, Lahore, `caps-2026-10`, `offer_current`, the notice, `contact_authorized: false`, rules v1.0. Audit `campaign.created` records the offer revision. An unpublished offer gives 409 | VERIFIED |
+| CAMPAIGN-02 | `test_campaign_02_03_…`; unit (11 rejection reasons and others) | The assessed contact_now account qualifies and is listed first. Unassessed, Karachi and manually excluded accounts show their reasons. The preview writes nothing (1 row, from the explicit exclusion). Unit: stale, other offer, decision, archived, synthetic/unsourced, unknown below minimum, localities, fixture-takes-synthetic-only | VERIFIED |
+| CAMPAIGN-03 | Same; unit (8 invalid rule sets, budget bounds, digests) | SQL-like, injected-decision and `unknown`-minimum rules give 422. Two pages share a digest with disjoint items; after the data changes, a stale-digest page gives 409. A foreign-organization offer gives 404 | VERIFIED |
+| CAMPAIGN-04 | `test_campaign_04_stale_preview_between_read_and_selection_writes_nothing` | New evidence after the preview: approve gives 409 "stale", with **0 membership rows and 0 usage rows**. The preview now says `stale_assessment` | VERIFIED |
+| CAMPAIGN-05 | `test_campaign_05_live_approval_blocked_without_quality_gate…`, `test_campaign_05_live_approval_works_only_after_a_passed_real_evaluation` | Live with the gate closed: `approval_blocked_reason evidence_quality_gate_closed`; approve gives 409 and activate gives 409. Fixture: approve is `approved_for_drafting` with `contact_authorized: false`; activate gives 409; a production fixture campaign is refused. Mechanism: after a PASSED evaluation on 30 test "real" accounts, a live approval succeeds and the campaign activates (internal planning) | VERIFIED (fixture path); **real live approval BLOCKED** (EVAL-07) |
+| CAMPAIGN-06 | `test_campaign_06_parallel_approvals_replay_and_exclusion_converge` | Two racing approvals give converged `[False, True]`, 1 membership and `used = 1`. A same-key replay is `replayed`; the same key with a different payload gives 409. Exclusion after approval gives `excluded`, and a later approve gives 409; the DB stage is `excluded` | VERIFIED |
+| CAMPAIGN-07 | `test_campaign_07_local_day_budgets_are_exact` | 8 concurrent units against a limit of 3 at 23:59 PKT: exactly 3 granted. At 00:01 PKT a new day grants one. A drafts budget of 0 is refused. Rows: approval 2026-10-23 = 3, 2026-10-24 = 1; draft 2026-10-24 = 0 | VERIFIED |
+| CAMPAIGN-08 | `test_campaign_08_pause_cancel_and_edits_preserve_blocks` | A rules edit marks the approved member `rules_changed` and `drafting_blocked`; a stale-revision edit gives 409. Paused: approve gives 409, exclude is allowed. An archived offer gives `offer_current false` and the member shows `offer_changed`. Cancelled: no further transitions. Stages are only approved_for_drafting or excluded | VERIFIED |
+| CAMPAIGN-09 | `test_campaign_09_auth_scope_injection_and_zero_sends` | Anonymous 401; observer create or pause 403 (read 200); missing CSRF 403; `send_now` field 422. A `<script>` name is stored as text. Other organizations: 404 and an empty list. **The outbox count is unchanged; no message, contact, permission or outreach tables exist** | VERIFIED |
+| CAMPAIGN-10 | e2e `wrap-campaigns.spec.ts` (3); `bash scripts/check.sh` | The operator re-assesses, then creates a **fixture** campaign; the notice and test-only label are visible. The Johar candidate "qualifies": approve gives "approved for drafting"; excluding an unassessed school gives "excluded". There are no send, launch, WhatsApp, message, enroll or draft buttons, and no activate control for fixture. Pause gives "Status: paused" with no approve buttons. The observer has 0 buttons. Everything persists after restart | VERIFIED (fixture) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `1ac039f` | 0 | 16/16 PASS. Integration **344** (+9); unit + contract **339** (+26); web 2; **e2e 22 + 7** |
+| First check.sh run | 1 | **3 failures, fixed**: (a) P3.2 and P3.3 tests asserted that *no campaign tables exist*, which P4.1 makes untrue by design; they now assert no campaign *rows* and no messaging, contact or permission tables. (b) CAMPAIGN-08 picked `members[0]` among equal timestamps; it now selects the approved member |
+| `./scripts/test-integration.sh tests/integration/test_campaigns.py` ×2 | 0 | 9 passed each time (after the convergence fix) |
+| Dev: `alembic upgrade head` (`0013 -> 0014`), smoke | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+**Code:** a concurrent second approval saw the first's membership in the item digest and got "stale" instead of converging. Membership is now checked before staleness.
+
+**E2E:** the P3.3 after-restart check assumed its override was the latest revision. The campaign spec re-assesses later, so the check now verifies the override in the history.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Gate ignored | 1 |
+| Unknown meets a minimum | 2 |
+| Stale assessment not rejected | 2 |
+| Exclusion loses to approval | 1 |
+| No budget consumption | 2 |
+| UTC day instead of the Asia/Karachi day | 1 |
+| Paused campaign approves | 1 |
+| Item-digest check removed | 1 |
+| Fixture mode takes real accounts | 2 |
+| Fixture campaign activates | 1 |
+
+### Rollback
+
+- **Stop:** pause or cancel campaigns.
+- **Keep:** history is retained.
+- **Revert code:** revert `0cc1eac`, `260a556` and `1ac039f`.
+- **Schema:** downgrade 0014 only on a disposable database.
+
+### VERDICT: VERIFIED (CAMPAIGN-01…10) in fixture mode; **live approval and activation are BLOCKED** by the closed P3.4 gate (as designed)
+
+**P4.2 is READY** for fixture-mode drafting. Real drafting stays blocked by the same gate and by `drafting_blocked` members.
