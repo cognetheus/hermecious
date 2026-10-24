@@ -139,7 +139,7 @@ def compose(
         sentences.append(
             Sentence(
                 "capability",
-                f"Our team offers a {claim.summary.rstrip('.')} for schools.",
+                f"Our team offers {claim.summary.rstrip('.')} for schools.",
                 {
                     "offer_id": claim.offer_id,
                     "offer_revision_id": claim.revision_id,

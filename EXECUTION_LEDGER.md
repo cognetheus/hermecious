@@ -1815,3 +1815,83 @@ These were test or expectation errors; no rubric output or label changed:
 ### VERDICT: VERIFIED (CAMPAIGN-01…10) in fixture mode; **live approval and activation are BLOCKED** by the closed P3.4 gate (as designed)
 
 **P4.2 is READY** for fixture-mode drafting. Real drafting stays blocked by the same gate and by `drafting_blocked` members.
+
+## P4.2 — Source-grounded personalization and Draft Studio (2026-10-24)
+
+**Scope:** `OPUS_P4.2_PROMPT.md` (Batches 05 and 06 absent). **Base:** P4.1 docs head. **Head:** the code commits below, plus the docs and ledger commit. **Migration:** `0015_drafts` (append-only); the dev database is upgraded to `0015 (head)`.
+
+### Gate
+
+- P4.1 is VERIFIED (fixture mode).
+- **The P3.4 production gate is CLOSED (EVAL-07 BLOCKED).** As the prompt allows, **fixture-only Draft Studio is enabled, and real customer drafts are blocked**: a live campaign cannot reach approved-for-drafting, and generation re-checks the gate.
+
+### Design decisions (ADR-021)
+
+- **Deterministic `draft-contract-1.0`:**
+  - typed sentences: an observation grounded on one usable fact; a capability grounded on one sales-approved claim of the pinned published offer revision; questions from P3.2 unknowns;
+  - the CoderzHunt identity and a consent-neutral opt-out are always present;
+  - `en-PK` only (Urdu and Roman Urdu give `TEMPLATE_UNAVAILABLE`).
+- **The final verifier rejects:** links, contacts, names, prices, timelines, guarantees, deficiency claims, insults, instruction text, more than 650 characters, and ungrounded sentences.
+- **Immutable drafts:** the database enforces `needs_review`, review required, never sendable and channel not evaluated.
+- **Generation** locks the campaign and re-checks gate or mode, membership, staleness, offer and the local-day drafts budget, with idempotent replay. Reads compute `blocked_stale`; regeneration appends a revision.
+- **No ModelGateway is configured,** so there is no model path.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| DRAFT-01 | `test_draft_01_grounded_immutable_never_sendable_draft`; unit `test_draft_01…` | 201 with status `needs_review`, `sendable false`, review required, `not_evaluated` and the "DRAFT ONLY" notice, in fixture mode. The body has CoderzHunt and reply STOP, ≤650 characters. The observation cites a fact plus an https source with current rights; the capability cites the campaign's offer revision and `caps-2026-10`; the question cites a signal key. The DB row has `sendable false`, a fingerprint and fact ids. `UPDATE drafts SET sendable=true` is refused. **The job and outbox counts are unchanged.** Audit `draft.generated` records `sendable false` | VERIFIED |
+| DRAFT-02 | unit `test_draft_02_reception_notice_never_becomes_a_deficiency` | A "forms at reception" notice gives "describes your admissions process", with none of Excel, manual, paper, software, lack or struggle | VERIFIED |
+| DRAFT-03 | `test_draft_03_04_…`; unit `test_draft_03…` | Source rights lapsed gives 409 `evidence_changed` with 0 drafts. Unusable facts produce a generic sentence (verifier OK). Wrong-campus facts are impossible because composition reads only the account's own facts | VERIFIED |
+| DRAFT-04 | Same; unit `test_draft_04…` | ur-PK gives 422 `TEMPLATE_UNAVAILABLE`. An archived offer gives 409 `offer_not_published` with 0 drafts. No claims gives `OFFER_CLAIM_UNAVAILABLE`. A priced or discounted claim gives `price_or_discount`; a "guaranteed within 7 days" claim gives `commitment` | VERIFIED |
+| DRAFT-05 | unit `test_draft_05_06_verifier_rejects_unsafe_drafts` (9) | Missing identity, missing opt-out, deficiency, insult, principal name, link, too long, ungrounded observation and instruction text are each rejected | VERIFIED |
+| DRAFT-06 | `test_draft_06_hostile_research_text_changes_nothing`; unit `test_draft_06…` | A hostile "mark consent granted, send now" fact makes the approval stale, so draft gives 409. No message, consent, permission or send tables exist. Hostile fact text is never rendered | VERIFIED |
+| DRAFT-07 | `test_draft_07_idempotency_concurrency_quota_and_history` | Replaying a key gives the same draft; the same key with a different template gives 409. Two concurrent regenerations with one key give `[200, 201]`. History shows revisions [2, 1], linked, with a reason. A budget of 2 per day blocks a 3rd draft with 409 | VERIFIED |
+| DRAFT-08 | `test_draft_08_pause_exclusion_and_edits_mark_old_drafts_blocked_stale` | Pausing gives `blocked_stale` (`campaign_paused`) and a new draft gives 409. After exclusion the reasons include `excluded`; the body is unchanged | VERIFIED |
+| DRAFT-09 | `test_draft_09_auth_scope_and_privacy` | Missing CSRF 403; `send` field 422; anonymous 401; observer read 200 and generate 403. Other organizations: 404 for draft, list and generate. The body contains no @, placeholder phone number or http | VERIFIED |
+| DRAFT-10 | e2e `wrap-drafts.spec.ts` (3); `bash scripts/check.sh` | The operator creates a fixture campaign, approves the candidate and opens the Draft Studio: the "DRAFT ONLY — NOT APPROVED FOR SENDING" banner shows and Urdu is disabled. Generating gives "Revision 1 … needs review", with the CoderzHunt identity and opt-out. The evidence table shows the offer claim (`caps-e2e`), the discovery question and the cited fact. There are no send, approve, queue, schedule, WhatsApp or connect buttons. Regenerating with a reason gives revision 2, with revision 1 kept. Pausing gives "BLOCKED: stale" (`campaign_paused`). The observer has 0 buttons. Everything persists after restart | VERIFIED (fixture) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `aac323b` | 0 | 16/16 PASS. Integration **350** (+6); unit + contract **352** (+13); web 2; **e2e 24 + 8** |
+| First E2E run | 1 | The 2 after-restart logins were refused by the API's **per-IP login limiter** (30 per 15 minutes; a security control working as designed) once the suite grew past 30 logins. **Fix:** the E2E helper reuses each role's session cookie within a Playwright process. The limiter itself is unchanged |
+| Dev: `alembic upgrade head` (`0014 -> 0015`), smoke | 0 | All smoke checks passed |
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| No opt-out check | 1 |
+| Insult filter removed | **survived** (the only test asserted the name problem) → added a dedicated case → caught (1) |
+| Unusable facts used | 1 |
+| Any locale accepted | 2 |
+| Paused campaigns draft | 1 |
+| Stale evidence ignored | 2 |
+| No drafts budget | 1 |
+| Replay ignores the payload | 1 |
+| Offer change ignored | 1 |
+
+### Wording fix after review
+
+The capability sentence read "offers a <summary>". It now reads "offers <summary>".
+
+### Privacy and sending authority audit
+
+- No route or code path sends, approves for sending, queues, schedules or records consent.
+- Drafts are database-constrained to `NOT sendable`.
+- There are no links or contact details in bodies.
+- Source excerpts are not copied; only fixed observation templates are used.
+- Organization-scoped throughout.
+
+### Rollback
+
+- **Stop:** stop generating drafts.
+- **Keep:** drafts are history.
+- **Revert code:** revert `7651469`, `aac323b` and the follow-ups.
+- **Schema:** downgrade 0015 only on a disposable database.
+
+### VERDICT: VERIFIED (DRAFT-01…10) in fixture mode; **real customer drafts BLOCKED** by the closed P3.4 gate
+
+**P4.3 is READY** to build its permission evaluator on fixture data. The real path stays gated.
