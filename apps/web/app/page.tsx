@@ -35,7 +35,7 @@ export default async function HomePage() {
         Signed in as {user.display_name ?? user.email} ({user.role})
       </p>
       <p>
-        <Link href="/accounts">Accounts</Link> · <Link href="/discovery">Discovery</Link> · <Link href="/offers">Offers</Link>
+        <Link href="/accounts">Accounts</Link> · <Link href="/discovery">Discovery</Link> · <Link href="/quality">Evidence quality</Link> · <Link href="/offers">Offers</Link>
       </p>
       <LogoutButton />
     </main>
