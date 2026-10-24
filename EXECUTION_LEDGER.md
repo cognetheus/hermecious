@@ -12,7 +12,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P0.4 | Structured logging, typed errors, config validation, secret masking | verified |
 | P1.1 | Auth, sessions, CSRF, operator-only access (Batch 02) | verified |
 | P1.2 | Core account/source/fact schema, rights policy, migrations (Batch 02) | verified |
-| P1.3 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
+| P1.3 | Versioned offers and approved capability claims (Batch 02) | verified |
+| P1.4 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
 
@@ -527,3 +528,103 @@ No dependency or lockfile changes in P1.2 (`git diff 01886f2 HEAD` on the lockfi
 ### VERDICT: VERIFIED
 
 P1.3 is next.
+
+## P1.3 — Versioned offers and approved capability claims (2026-10-24)
+
+**Scope:** Batch 02 §P1.3 and `OPUS_P1.3_PROMPT.md`. **Base:** `f505396`. **Head:** `a07435c` (code), plus the docs and ledger commit.
+
+### Preflight
+
+P1.2 is VERIFIED; the P0.3 remote-CI gap is carried forward. The existing pieces reused are `verticals` (`schools`), `users`/`organizations`, `authorize_request` (CSRF, default owner-only mutations), `allow_roles`, `require_capability(PUBLISH)`, the P0.4 errors, Alembic (`0003` → `0004`) and the integration harness. No pre-existing offer schema existed.
+
+### Decisions
+
+1. **The offer ↔ revision cycle** is handled by creating the offer → revision composite FKs after both tables (`use_alter`).
+2. **The database guarantees immutability:** a PL/pgSQL trigger blocks content changes, deletes and illegal state transitions. Application rules alone could be bypassed by an ORM or SQL write.
+3. **`users` gains `UNIQUE(organization_id, id)`.** This is additive and needed so `created_by`/`approved_by` are organization-scoped FKs. It is the only change to a P1.1 table and does not alter behaviour.
+4. **`approved_claims_json`** stores the author's *proposed* approvals. Publication re-validates every one, and the sales-ready projection serves only published revisions, so a draft cannot sell.
+5. **Commitment guard:** approved claims and price text may not contain delivery timing, SLA or uptime, guarantees, or "integrates with". Free-text promises are refused outright, because there is no structured, evidenced way to represent them yet.
+6. **Sales-ready on a non-sellable offer returns 409** `Offer has no published, sellable revision`, the documented domain denial. A foreign or unknown offer returns 404.
+7. **Observers see only published revisions**, never drafts.
+8. **New `AppClock` dependency** (`app/api/dependencies.py`): routes use the app's injected clock, so `FixedClock` applies in tests.
+9. **UI:** `/offers` and `/offers/[id]`, rendered server-side. Readiness labels read Available, Limited, Planned, Unverified or Not supported. The owner gets publish and archive buttons; owners and operators get a JSON textarea that creates a new draft revision. Text is rendered escaped.
+10. **Seed:** `python -m app.offers.seed`, idempotent. It requires exactly one active owner and never publishes.
+
+### Acceptance evidence
+
+| ID | Executed test / command | Result summary | Status |
+|---|---|---|---|
+| OFFER-01 | `test_seeded_school_draft_is_unpublished_with_no_claims_or_prices`, `test_seed_cli_needs_exactly_one_owner_and_never_publishes`; real stack: seed CLI twice | Listed as `school_admin_starter`, draft, draft revision 1. All 4 modules unverified; no approved claims, prices or evidence. Sales-ready 409; publishing the seed gives 400. CLI refuses without an owner; with an owner it is idempotent (1 offer, all drafts). Real run printed `seed: offer school_admin_starter is draft (version 2); nothing was published` both times | PASS |
+| OFFER-02 | `test_operator_drafts_but_cannot_publish`, `test_observer_is_read_only_and_never_sees_drafts` | Operator creates the offer and revision (201); publish 403; DB still draft. Observer cannot create (403), sees `[]` revisions for a draft, and publish gives 403 | PASS |
+| OFFER-03 | `test_unsellable_readiness_in_approved_claims_blocks_publication` [planned, unverified, not_supported], `test_unsubstantiated_claims_block_publication` [no evidence, no approval note, limited without limitations] | 400 with a precise message. Offer status, version and `published_revision_id` unchanged; revision still draft with no approver | PASS |
+| OFFER-04 | `test_valid_revision_publishes_one_atomic_snapshot` | 200. `approved_by` is the owner, `approved_at == published_at`, `content_sha256` equals the draft digest and an independently recomputed digest. Sales-ready lists only `fee_tracking` and `admissions_intake` (limited, with limitations); `parent_portal` (planned) is absent; `pricing_unavailable` | PASS |
+| OFFER-05 | `test_published_snapshot_is_immutable_and_new_drafts_do_not_replace_it` | A new draft does not change sales-ready (still revision 1, same digest). Raw SQL changing claims, digest, state or approval time, and `DELETE`, all raise `CheckViolation` from the trigger. An ORM edit of `price_rules_json` fails ("immutable"). Digest unchanged afterwards | PASS |
+| OFFER-06 | `test_concurrent_publishers_with_the_same_version_one_wins`, `test_stale_writers_get_409`, `test_publish_racing_archive_leaves_a_consistent_state` | Concurrent publishes give `[200, 409]`, with exactly one published revision matching `published_revision_id`. A stale revision create or publish gives 409 with no row. Publish vs archive race gives `[200, 409]`, and the final state is consistent either way | PASS |
+| OFFER-07 | `test_archive_withdraws_selling_but_keeps_history` | Archive 200, then sales-ready 409. History still shows revision 1 `retired` with `published_at` kept. New revision and publish give 409 | PASS |
+| OFFER-08 | `test_other_organizations_cannot_see_or_touch_offers` | The intruder's list is empty; detail and sales-ready give 404 without the code in the body; archive gives 404. A raw cross-org revision insert raises `ForeignKeyViolation fk_offer_revisions_org_offer` | PASS |
+| OFFER-09 | `test_pricing_must_be_approved_with_evidence`, `test_invalid_price_rules_are_rejected_at_draft_time` [negative, zero, 3 decimals, USD, unit], `test_invented_commitments_cannot_be_published` [go-live, delivered in, 99.9% uptime SLA, integrates with] | An unapproved price blocks publication (400). An approved price with evidence publishes, and sales-ready shows exactly the approved rule. Invalid prices give 422 at draft time with no row. Commitment text gives 400 "…commitment". No prices gives `pricing_unavailable` | PASS |
+| OFFER-10 | `test_csrf_anonymous_and_malformed_requests_are_denied_without_effect`, `test_markup_and_control_characters_are_rejected_in_claims` [html, bidi, markup-injection], `test_malformed_capability_content_is_rejected` (6), `test_duplicate_offer_code_is_a_conflict`, `bash scripts/check.sh` | Missing or forged CSRF gives 403; anonymous 401; malformed JSON and unknown fields 422; offer unchanged. Markup and bidi text gives 422 without echoing `<script>`. Empty, duplicate, ambiguous-name, unknown-readiness, unlisted-evidence and URL-as-evidence content gives 422. Duplicate code 409. `check.sh` 15/15 PASS (integration 151, unit + contract 122). Dev DB migrated `0003 -> 0004`; smoke PASS | PASS |
+
+### Failure simulations
+
+- **Database failure mid-publish:** `test_database_failure_mid_publish_rolls_back` injects `OperationalError` after the version bump. Result: 503 `DEPENDENCY_UNAVAILABLE`, and the offer stays draft with the same version and no partial publish.
+- **Workflow after archive:** see OFFER-07.
+- **Malformed matrix and ambiguous names:** see OFFER-10.
+- **Race between publish and archive:** see OFFER-06.
+- **Prompt or markup injection in a summary:** rejected at input. Rendering is escaped by React, and sales-ready carries only structured approved fields.
+
+### Real end-to-end flow (throwaway stack `hermecious-p13e2e`, web origin `http://localhost:13002`; removed with `down -v`)
+
+1. Migrations `→0004`. Bootstrap through `expect` gives `organization and owner created`. Seed twice: draft both times, nothing published.
+2. Login through the web proxy: 200.
+3. `/offers` HTML lists `school_admin_starter` as draft. `/offers/{id}` shows 4 "Unverified" labels, "pricing unavailable" and "no published, sellable revision".
+4. Publishing the seeded draft through the proxy gives **400** "a revision needs at least one claim approved for sales" (identical when sent directly to the API).
+5. New revision through the proxy: 201 (`revision 2`). Publish: 200 `published`.
+6. Sales-ready: revision 2, claims `['fee_tracking']` (the unverified admissions claim stays hidden), `pricing_unavailable`. The page shows "yes, revision".
+7. CSRF-less archive: 403. Archive with CSRF: 200 `archived`. Sales-ready then gives 409.
+8. Log scan: password 0, CSRF token 0. Events: `offer.publication_refused` ×2, `offer.revision_created`, `offer.published`, `offer.archived`.
+
+**Process note:** my first flow script built JSON inside nested `$(…)` quoting, which sent malformed bodies (422) and duplicated output lines. A focused reproduction showed the API and proxy behave correctly, and the flow was rerun with file-based bodies (results above).
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Readiness gate removed from `assert_publishable` | 3 failures: `…blocks_publication[planned/unverified/not_supported]` |
+| `expected_version` comparison removed | `test_stale_writers_get_409`. The concurrent-publisher test still passed: the row lock plus the "only the current draft can be published" check also stop the second publisher, which is defence in depth |
+
+### Security, privacy and claims review
+
+- No offer can sell without an owner publishing evidence-backed claims, and the draft matrix is never exposed through sales-ready.
+- Prices are never invented: absence gives `pricing_unavailable`.
+- Revisions are immutable at the database level.
+- Organization isolation is enforced by composite FKs and service scoping (404).
+- Publish and archive are owner-only with CSRF.
+- Logs contain only event names.
+- **Residual risks:**
+  - The commitment guard is pattern-based. Novel phrasings could slip through, so owner review at publish time remains the control.
+  - The JSON textarea UI is minimal (no field-level editor).
+  - No browser E2E (P7.5).
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/alembic/versions/0004_offers.py` | Tables, cyclic FKs, immutability trigger, additive `users` constraint |
+| `apps/api/app/offers/{models,schemas,service,routes,seed}.py` | Catalog domain, API and seed |
+| `apps/api/app/api/dependencies.py` | `AppClock` |
+| `apps/api/app/auth/models.py` | `UNIQUE(organization_id, id)` on `users` |
+| `apps/api/app/main.py`, `app/persistence/registry.py` | Wiring |
+| `apps/api/tests/integration/test_offers.py` (39 tests), `test_migrations.py` (HEAD `0004`) | Tests |
+| `apps/web/{lib/api.ts,lib/mutate.ts,lib/offers.ts,app/page.tsx,app/offers/page.tsx,app/offers/[id]/page.tsx,app/offers/[id]/offer-actions.tsx}` | Offers UI |
+| `docs/contracts/offer-catalog.md`, `README.md`, `docs/runbooks/local-development.md` | Documentation |
+
+### Rollback
+
+- **Disposable DB:** `alembic downgrade 0003` (exercised by `test_downgrade_to_base_and_back`).
+- **Data-bearing DB:** back up and prefer a forward repair. Never erase approved revisions.
+- **Code:** `git revert a07435c`.
+
+### VERDICT: VERIFIED
+
+Batch 02 is complete. P1.4 is next (Batch 03).
