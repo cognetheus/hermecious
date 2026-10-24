@@ -77,6 +77,12 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
         {campaign.members.map((m) => (
           <li key={m.account_id}>
             {m.name}: {m.stage.replaceAll("_", " ")} ({m.reason}){m.stale.length ? `; stale: ${m.stale.join(", ")}` : ""}; {karachiTime(m.decided_at)}
+            {m.stage === "approved_for_drafting" ? (
+              <>
+                {" "}
+                <Link href={`/campaigns/${campaign.id}/accounts/${m.account_id}`}>Draft Studio</Link>
+              </>
+            ) : null}
           </li>
         ))}
       </ul>

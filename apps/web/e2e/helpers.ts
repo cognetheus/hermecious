@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { type Cookie, expect, type Page } from "@playwright/test";
 
 export const RUN = process.env.E2E_RUN_ID ?? "local";
 export const PASSWORD = process.env.E2E_PASSWORD ?? "";
@@ -8,12 +8,26 @@ export const USERS = {
   observer: `observer-${RUN}@e2e.example`,
 };
 
+// One real login per role per Playwright process: the API's per-IP login limiter (30 / 15 min) is a security
+// control, so the suite reuses each role's session cookie instead of logging in for every test.
+const sessions = new Map<string, Cookie[]>();
+
 export async function login(page: Page, who: keyof typeof USERS) {
+  const cached = sessions.get(who);
+  if (cached) {
+    await page.context().addCookies(cached);
+    await page.goto("/");
+    if (await page.getByText("Signed in as").isVisible()) {
+      return;
+    }
+    sessions.delete(who);
+  }
   await page.goto("/login");
   await page.getByLabel("Email", { exact: true }).fill(USERS[who]);
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText("Signed in as")).toBeVisible();
+  sessions.set(who, await page.context().cookies());
 }
 
 export async function createAccount(page: Page, name: string, locality = "Johar Town") {
