@@ -12,6 +12,7 @@ import {
 import AccountEditor from "./account-editor";
 import CorrectionForm from "./correction-form";
 import EvidenceForm from "./evidence-form";
+import ResearchSection from "./research";
 
 export const dynamic = "force-dynamic";
 
@@ -108,6 +109,8 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
           </article>
         ))}
       </section>
+
+      <ResearchSection accountId={account.id} canEdit={canEdit} />
 
       {canEdit ? <EvidenceForm accountId={account.id} sources={sources} /> : null}
 
