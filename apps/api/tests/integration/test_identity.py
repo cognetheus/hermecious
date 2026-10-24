@@ -450,3 +450,20 @@ def test_identity_10_restart_and_rerun_keep_decisions_and_create_no_duplicates(
         assert count(restarted, IdentityDecision) == 1
     finally:
         close_app(restarted)
+
+
+def test_identity_01_reviewed_decisions_survive_later_source_revisions(app: FastAPI, clock: FixedClock) -> None:
+    actor = make_actor(app)
+    stage(app, actor, OSM, "node/516", "Fixture Canal School", locality="Canal View")
+    stage(app, actor, CSV, "seed-516", "Fixture Canal School", locality="Canal View")
+    resolve(app, actor)
+    (row,) = suggestions(app)
+    decide(app, actor, row.id, "confirm_same_campus", 1)
+    clock.advance(timedelta(hours=2))
+    stage(app, actor, OSM, "node/516", "Fixture Canal School Annex", locality="Canal View")  # upstream rename
+    report = resolve(app, actor)
+    assert (report.evidence_changed_on_reviewed, report.recomputed, report.superseded) == (1, 0, 0)
+    (after,) = suggestions(app)
+    assert (after.status, after.version, after.reason_codes) == ("confirmed", 2, row.reason_codes)
+    assert after.evidence_changed_at == clock.now()  # flagged for a reviewer; the human decision is not rewritten
+    assert count(app, IdentityDecision) == 1
