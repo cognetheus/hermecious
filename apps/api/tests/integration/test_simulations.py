@@ -450,3 +450,60 @@ def test_sim_10_auth_csrf_cross_org_and_bounds(app: FastAPI, client: TestClient,
     assert foreign.post(url, json={"idempotency_key": key()}, headers=mutation_headers(other)).status_code == 404
     client.cookies.clear()
     assert client.get(url).status_code == 401
+
+
+# --- Guards that only race or misconfiguration can reach (mutation follow-up) ------------------------------------
+
+
+def test_sim_03_suppression_between_approval_and_eligibility_reads_still_denies(
+    app: FastAPI, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An opt-out that commits after the approval check but before the policy check must still win."""
+    from app.approvals import service as approvals  # noqa: PLC0415
+
+    real_status = approvals.status
+
+    def status_then_opt_out(*args: Any, **kwargs: Any) -> Any:
+        result = real_status(*args, **kwargs)
+        sim_service_suppress(app, world.org, world.first[1])
+        return result
+
+    monkeypatch.setattr(approvals, "status", status_then_opt_out)
+    raced = of(world.execute(), world.first[0])
+    assert (raced["bucket"], raced["lifecycle"], raced["sim_receipt_id"]) == ("denied", "not_attempted", None)
+    assert "suppressed" in raced["reasons"]
+
+
+def test_sim_readiness_mode_never_simulates_delivery(app: FastAPI, world: World) -> None:
+    """Readiness runs (live campaigns, production) report gaps but never reach the transport."""
+    started = world.run().json()
+    with db(app) as session:
+        session.execute(text("UPDATE simulation_runs SET mode = 'readiness' WHERE id = :i"), {"i": started["id"]})
+        session.commit()
+    assert [o.status for o in worker(app).run_once()] == ["succeeded"]
+    first = of(world.detail(started["id"]), world.first[0])
+    assert first["bucket"] == "denied" and first["reasons"] == ["readiness_only_no_simulated_delivery"]
+    assert first["lifecycle"] == "not_attempted" and first["sim_receipt_id"] is None
+
+
+def test_sim_07_cancel_requested_mid_run_stops_remaining_items(
+    app: FastAPI, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.second()
+    real_item = sim_service._item
+    calls: list[int] = []
+
+    def item_then_cancel(db_: Any, run: Any, *rest: Any) -> Any:
+        result = real_item(db_, run, *rest)
+        calls.append(1)
+        if len(calls) == 1:
+            with db(app) as session:
+                sim_service.cancel_run(
+                    session, actor=world.org.actor, clock=app.state.clock, campaign_id=run.campaign_id, run_id=run.id
+                )
+        return result
+
+    monkeypatch.setattr(sim_service, "_item", item_then_cancel)
+    run = world.execute()
+    assert run["status"] == "cancelled" and run["considered"] == len(run["items"]) == 1
+    assert run["report"]["considered"] == 1 and run["report"]["reconciled"] is True

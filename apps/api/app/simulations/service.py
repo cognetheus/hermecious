@@ -193,8 +193,13 @@ def create_run(
 
 
 def _lock(db: Session, org: uuid.UUID, run_id: uuid.UUID) -> SimulationRun | None:
+    """Lock and *reload* the row: sessions keep objects after commit, so a cancel written by another session
+    would otherwise be invisible on an already-loaded run."""
     return db.scalar(
-        select(SimulationRun).where(SimulationRun.organization_id == org, SimulationRun.id == run_id).with_for_update()
+        select(SimulationRun)
+        .where(SimulationRun.organization_id == org, SimulationRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
