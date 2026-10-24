@@ -1632,3 +1632,106 @@ These were test or expectation errors; no rubric output or label changed:
 ### VERDICT: VERIFIED (QUALIFY-01…10), on synthetic fixtures. Production accuracy is an unmeasured hypothesis until P3.4.
 
 **P3.4 is UNBLOCKED** for the evaluation harness. A real 30-account evaluation needs real, rights-reviewed data, and live sources are still BLOCKED.
+
+## P3.4 — Evidence quality evaluation (2026-10-24)
+
+**Scope:** `OPUS_P3.4_PROMPT.md`. **Base:** P3.3 docs head. **Head:** `599608e` (code), plus the docs and ledger commit. **Migration:** `0013_evidence_evaluation` (runs and items, plus append-only verdicts and remediations); the dev database is upgraded to `0013 (head)`.
+
+### Specification gap
+
+`docs/phases/HERMECIOUS_BATCH_06_P3.4-P4.2.md` (named as binding) is **absent**, like Batch 05. I implemented from the P3.4 prompt and the blueprint. The owner should supply Batch 06 if it differs.
+
+### Gate
+
+- P3.1–P3.3 are VERIFIED, on fixtures.
+- **There are no real, rights-reviewed Lahore accounts**, because the live sources are BLOCKED, **and no authorized human reviewer has audited any.** EVAL-07 therefore cannot be run.
+
+### Design decisions (ADR-019)
+
+1. **Displayed factual claim** means:
+   - every current `source_supported` fact;
+   - every P3.2 `observed` or `conflicting` statement;
+   - every P3.3 dimension shown `strong` or `moderate`.
+
+   Hypotheses, unknowns and questions are labelled as unverified on screen and are not claims.
+2. **Seeded deterministic sample:** up to 30 distinct accounts by `sha256(seed:id)`, with real, synthetic or unsourced provenance.
+   - Any synthetic account gives `SYNTHETIC_CORPUS`; fewer than 30 real gives `INSUFFICIENT_CORPUS`. Both are BLOCKED.
+   - A fingerprint covers the items and their rights versions. Items carry rights-safe summaries and no excerpts.
+3. **Human verdicts:** five values, append-only revisions. `supported` is refused for unusable or contradicted evidence.
+4. **Metric: supported / all items.** Lapsed evidence does not count. 0/0, below 90% (integer arithmetic) or a still-displayed failure each give FAILED. Finalization is refused while items are pending.
+5. **Remediation:** P1.4 demotion of the failed fact, with an append-only link. P3.2/P3.3 are invalidated through their digests. A post-remediation run keeps the baseline intact.
+6. **Fail-closed enrollment gate:** it opens only for a finalized, real, PASSED run.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| EVAL-01 | `test_eval_01_twenty_nine_real_accounts_block…`, `test_eval_01_exactly_thirty_real_distinct_deterministic…` | 29 real, 2 synthetic and 1 unsourced account: `INSUFFICIENT_CORPUS`, BLOCKED, 29 sampled; excluded 2 `synthetic_not_eligible` and 1 `no_sources`. With 32 real plus a duplicate campus: corpus OK with 30. The same seed gives identical account ids and fingerprint; another seed gives another subset. The duplicate campus is never sampled twice | VERIFIED (mechanism) |
+| EVAL-02 | `test_eval_02_03_frozen_universe_and_verdicts` | Items are `fact` and `signal` kinds. A hypothesis is excluded. Citations carry no excerpt. 0 accounts without claims. The stored fingerprint equals the reported one, and adding a fact changes it | VERIFIED |
+| EVAL-03 | Same | A usable fact accepts `supported` (200). A fake "software_in_use: Excel" fact is recorded `unsupported` | VERIFIED |
+| EVAL-04 | `test_eval_04_expired_contradicted_and_metadata_only…` | Metadata-only is `unauditable`, and `supported` gives 409 "unauditable". A conflicting signal is `contradicted`, and `supported` gives 409. A source expiring before finalization lowers the numerator below the count of supported verdicts. The result is FAILED with still-displayed failures counted | VERIFIED |
+| EVAL-05 | unit `test_evaluation_metric.py` (10); `test_eval_05_06_synthetic_math…` | 18/20 = 0.90 passes, while 17/20, 26/30, 0/0 and displayed failures fail; 29/29 insufficient and synthetic are BLOCKED. DB: synthetic corpus of 30 (20 facts, 10 zero-fact accounts): numerator 18, denominator 20, ratio 0.9, **BLOCKED** | VERIFIED |
+| EVAL-06 | `test_eval_05_06_…`, `test_eval_06_real_corpus_mechanism_fails_then_passes_after_remediation` | Remediation creates 2 links. The corrected facts are `hypothesis` with a reason citing the evaluation. The baseline keeps both `unsupported` verdicts. The P3.2 brief shows `needs_reassessment: true`. The post-remediation run uses the same accounts: 18/18 with 0 displayed failures (still BLOCKED because synthetic). Mechanism corpus: baseline 28/30 FAILED ("still displayed"), then remediation, then a post-run 28/28 **PASSED**, which opens the gate (pointing to the post run). The baseline still reads FAILED | VERIFIED (mechanism) |
+| EVAL-07 | — | **NOT-RUN / BLOCKED.** There are no 30 real, policy-permitted Lahore school accounts (P2.2 LIVE-10 and P3.1 live research are BLOCKED) and no authorized human reviewer has adjudicated. **No production evidence-accuracy figure exists.** The production gate is CLOSED in every real environment | **BLOCKED** |
+| EVAL-08 | `test_eval_08_replay_concurrency_and_interrupted_finalization` | Replaying a create returns the same run; the same key with a different seed gives 409. Finalizing with pending items gives 409 "incomplete", with state INCOMPLETE and nothing finalized. Two racing verdicts: `[200, 409]`. A finalize replay returns the same `finalized_at`. A verdict after finalization gives 409. `UPDATE evidence_eval_verdicts` raises "append-only". The duplicate campus is excluded (EVAL-01) | VERIFIED |
+| EVAL-09 | `test_eval_09_permissions_scope_injection_redaction_and_no_sends` | Anonymous 401; observer create or verdict 403 (read 200); missing CSRF 403. Another organization: run and verdict 404. Injection text is an unreviewed item and data only. The report contains no emails or excerpts. `allow_synthetic` in production is refused. **The outbox count is unchanged; there are no sends** | VERIFIED |
+| EVAL-10 | e2e `verify-evidence.spec.ts` (3); `bash scripts/check.sh` | The operator opens Evidence quality: gate CLOSED. Starting a run including synthetic accounts shows SYNTHETIC_CORPUS, BLOCKED. The operator reviews every claim, recording "unverifiable" when the server refuses "supported", and finalizes: "BLOCKED — corpus is synthetic_corpus", "Supported n/m; failed claims still displayed: ≥1". Withdrawing the failed contact fact shows "withdrawn as fact (correction recorded)"; the gate stays CLOSED. The observer has no controls. Everything persists after restart. All P3.1–P3.3 suites pass | VERIFIED (UI path, synthetic) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `599608e` | 0 | 16/16 PASS. Integration **335** (+8); unit + contract **313** (+11); web 2; **e2e 20 + 6** |
+| `./scripts/test-integration.sh tests/integration/test_evaluation.py` ×2 | 0 | 8 passed each time |
+| Dev: `alembic upgrade head` (`0012 -> 0013`), smoke | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+**Code:** the 90% check now uses integer arithmetic.
+
+**Test design errors** (no gate semantics changed):
+- an "unsourced" helper attached a source;
+- a metadata-only first-party source still counts as real provenance;
+- two finalizations tied on the fixed clock;
+- the E2E expected INCOMPLETE where a synthetic corpus is (correctly) BLOCKED from the start.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Synthetic counted as real | 2 |
+| 29 real accounts accepted | 1 |
+| 0/0 passes | 2 |
+| `supported` allowed on any evidence | 1 |
+| Displayed failures ignored | 3 |
+| Denominator limited to supported items | 3 |
+| Gate opens on any run | 2 |
+| Duplicate campus allowed | 2 |
+| Finalize with pending items | 1 |
+
+### Self-review
+
+- **Metric gaming:**
+  - the denominator is every frozen item;
+  - failures are never dropped from the baseline;
+  - lapsed evidence is re-checked at finalization;
+  - synthetic and insufficient corpora cannot pass.
+- **Privacy and rights:** no excerpts in items or the report; reviewer ids only.
+- **Tamperability:** verdicts and remediations are append-only; results are only written at finalization.
+- **Invalidation:** corrections change the P3.2/P3.3 digests.
+- **Known limit:** the "real provenance" heuristic trusts non-fixture providers. A real audit must also have the reviewer confirm each school exists, which the verdicts capture.
+
+### Rollback
+
+- **Stop:** stop creating evaluations; the gate is fail-closed.
+- **Keep:** history is retained.
+- **Revert code:** revert `f730d46` and `599608e`.
+- **Schema:** downgrade 0013 only on a disposable database.
+
+### VERDICT: IMPLEMENTATION VERIFIED (EVAL-01…06, 08…10); **EVAL-07 BLOCKED**, so the production quality gate is CLOSED
+
+**Owner inputs required for EVAL-07:**
+1. 30 real, rights-permitted Lahore school accounts, through the P2.2 live canary or owner seed lists with real sources.
+2. A named human reviewer to adjudicate every displayed claim in `/quality`.
+
+**P4.1 is UNBLOCKED as engineering, but must honour the CLOSED gate:** no real enrollment until EVAL-07 passes.
