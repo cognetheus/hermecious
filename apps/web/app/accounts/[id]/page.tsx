@@ -12,6 +12,7 @@ import {
 import AccountEditor from "./account-editor";
 import CorrectionForm from "./correction-form";
 import EvidenceForm from "./evidence-form";
+import QualificationPanel from "./qualification";
 import ResearchSection from "./research";
 import SchoolSignalsSection from "./school-signals";
 
@@ -114,6 +115,8 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
       <ResearchSection accountId={account.id} canEdit={canEdit} />
 
       <SchoolSignalsSection accountId={account.id} canEdit={canEdit} />
+
+      <QualificationPanel accountId={account.id} canEdit={canEdit} />
 
       {canEdit ? <EvidenceForm accountId={account.id} sources={sources} /> : null}
 
