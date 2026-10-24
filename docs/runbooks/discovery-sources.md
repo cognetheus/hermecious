@@ -69,6 +69,18 @@ This is **off by default**. Each step is the owner's decision.
    - **An empty result** is a real outcome; record it as one.
    - **In every case:** listings are map data and say nothing about ownership, size, software or interest.
 
+## Running and reviewing discovery in the app (P2.4)
+
+1. **Start a run.** Go to **Discovery → New discovery run**. Only permitted sources are listed. Choose a budget (≤30 listings), then **Start run**. The worker picks the run up; the page refreshes every 2 s.
+2. **Read the result honestly.**
+   - **"Completed (bounded run)"** means the bounded query finished. It never means every school was found.
+   - **Partial or failed** states show their reason, such as `rate_limited`, `provider_disabled` or `worker_error`.
+3. **Review each listing.**
+   - Read its source link, times, rights and unknowns.
+   - If it shows **"Possible same campus"**, decide **Same campus** or **Different campus** first. A new account cannot be created while that question is open.
+   - Then choose **Accept as new campus** (one account, research pending), **Attach to confirmed account**, **Reject** or **Defer**.
+4. **Cancel if needed.** Cancel a queued or running run from its page. Accounts already admitted are kept.
+
 ## Refusals and what they mean
 
 | Message or reason | Meaning |
@@ -80,6 +92,9 @@ This is **off by default**. Each step is the owner's decision.
 | `stop_reason: rate_limited` / `unavailable` | The endpoint pushed back. Wait (Retry-After is honoured); do not loop |
 | `stop_reason: policy_revoked` | The provider was disabled during the run. Nothing further was stored |
 | `stop_reason: response_too_large` | The response exceeded 1 MB. Use a smaller box |
+| Run `failed: requester_not_permitted` | The requester was deactivated or lost write access before the worker ran |
+| Accept refused: `…rights_expired` | The listing's provenance is past retention. Run discovery again for a fresh, permitted observation |
+| Accept refused: "decide the possible same-campus match first" | Resolve the P2.3 suggestion shown on the card |
 
 ## Rollback
 

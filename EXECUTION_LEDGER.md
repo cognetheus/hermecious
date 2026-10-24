@@ -1185,3 +1185,129 @@ P2.2 is **not VERIFIED**: LIVE-10 is BLOCKED on the owner's live opt-in. The P2.
 ### VERDICT: VERIFIED (IDENTITY-01…10), under the documented P2.2 fixture-gate exception
 
 P2.4 is next.
+
+## P2.4 — Operator discovery runs, reviewable candidates and explicit admission (2026-10-24)
+
+**Scope:** Batch 04 §P2.4 and `OPUS_P2.4_PROMPT.md`. **Base:** `70ea177`. **Head:** `8ccd204` (code), plus the docs and ledger commit. **Migration:** `0009_discovery_runs` (`discovery_runs`, `discovery_run_candidates`, append-only `discovery_review_decisions`); the dev database is upgraded to `0009 (head)`.
+
+### Gate
+
+**Satisfied:**
+- P2.4 requires P2.3 VERIFIED, P1.1, P1.4 and P1.5. All are VERIFIED in this ledger.
+- P2.3 is VERIFIED under the documented P2.2 fixture-gate exception.
+
+**Still open:**
+- **P2.2 LIVE-10 stays BLOCKED** and is not treated as verified.
+- P2.4 is verified with the offline synthetic fixture and with hermetic OSM stubs only; **no live provider evidence exists.**
+
+### Design decisions (ADR-015)
+
+1. **Runs commit atomically** with a `discovery.run` v1 job (payload `{run_id}`) and the P1.5 outbox.
+   - Budgets are snapshotted and downward-only (≤30, 5 pages, 20 fetches, 45 s; below the 60 s lease), then re-applied by the worker and the runner.
+   - The area is the server-bound area of the provider; the browser never sends geometry.
+2. **The worker re-resolves the provider under current policy.** Stale policy gives `failed` before any request.
+   - It acts as the requester, after re-checking that the requester is active and allowed to make changes.
+   - It then runs the P2.1/P2.2 runner (policy and cancellation are checked before every adapter call), links ≤30 staged candidates and runs the P2.3 resolver.
+   - **The terminal state is written only in the fenced completion transaction.** Terminal runs are never resurrected, and unexpected errors fail the run on the last attempt.
+3. **Admission happens only by explicit reviewer action.**
+   - **`accept_new`:**
+     - re-checks rights (candidate and source expiry, provider policy);
+     - is refused while any open `suggest_review` same-campus suggestion exists;
+     - creates one P1.4 account (`discovered`, research pending) with aliases (Urdu included) carrying the source, plus a P2.3 link and an `account.created` audit (origin `discovery_review`, `source_record_id`).
+   - **`attach_existing`** needs the P2.3 reviewed link.
+   - **Idempotency and concurrency:** commands are idempotent per key, a stale version gives 409, and concurrent accepts converge on one account.
+4. **UI:** `/discovery`, `/discovery/new` and `/discovery/runs/[id]` in the existing Next.js app.
+   - Run state comes from durable-state polling.
+   - Cards show provenance, rights, expiry, attribution and unknowns, plus P2.3 match decisions.
+   - Observers are read-only.
+   - Rendering is safe: only escaped text, `https:`-only links and `lang`/`dir` on Urdu names.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| RUN-01 | `test_run_01_operator_start_commits_run_job_and_outbox_atomically` | Sources offered: the fixture only (OSM unreviewed); ceilings 30/5/20/45. Operator POST gives 202 with status `pending`, `exhaustive: false` and the budget snapshot. The job `discovery.run` has payload `{run_id}` and `job_id` equal to the run's; there is 1 outbox event and 1 `discovery.run_requested` audit with the budget | VERIFIED |
+| RUN-02 | `test_run_02_denials_happen_before_any_write` | No CSRF 403; unreviewed OSM 400; unknown provider 400; budget 31 or 600 s 422; `bbox` / `endpoint` / `organization_id` fields 422; observer 403; anonymous 401. **0 runs, 0 jobs, 0 outbox rows.** For another organization's run: GET, candidates and cancel all 404, and the list is empty | VERIFIED |
+| RUN-03 | `test_run_03_worker_progress_counts_and_evidence_survive_reload` | Pending, then a P1.5 worker run (NoSink, no Redis), giving `completed`: examined 9, staged 4, rejected 5, displayed 4, 3 pages, job `succeeded`. A second worker pass claims nothing. Candidate reloads are byte-identical; every item is `unverified`, carries a fixture https source URL, and lists its unknowns. 0 accounts | VERIFIED |
+| RUN-04 | `test_run_04_truncation_rate_limit_empty_and_stale_policy_are_truthful`, `test_run_04_worker_enforces_the_snapshotted_operator_budget` | 45 OSM elements: `completed`, `truncated`, 30 displayed, `candidate_cap`, 1 request, ODbL attribution. A 429 with Retry-After 300 gives `partial` (`rate_limited`), 0 shown. Empty gives `completed` with 0 shown. Review withdrawn after enqueue gives `failed` (`provider_disabled`) with **0 requests**. Budget 2/1: 2 displayed, `candidate_cap`, `truncated` (this exposed and fixed the stop-order defect below) | VERIFIED |
+| RUN-05 | `test_run_05_create_replay_conflict_and_duplicate_workers`, `test_run_05_concurrent_identical_creates_make_one_run` | Same key and body give one run, with `replayed` true on the replay; a changed body gives 409; 1 run and 1 job. A stalled worker's lease expires and the rescuer completes the job; the stalled worker's late `execute` returns `lease_lost`. The run stays `completed` with 4 displayed, 4 links and 4 candidates. Three concurrent identical creates give 1 created and 2 replays, 1 job | VERIFIED |
+| RUN-06 | `test_run_06_accept_new_is_one_audited_account_with_source_proof`, `test_run_06_concurrent_accepts_converge_on_one_account` | Accept gives 200 with an account id. The replay is identical apart from `replayed`; the same key with a different reason gives 409. 1 account (`discovered`, Lahore, **0 facts**), 1 decision, a P2.3 link, candidate `admitted`, and an `account.created` audit with origin and `source_record_id`. Two operators accepting concurrently get one account: one result converged, 1 link | VERIFIED |
+| RUN-07 | `test_run_07_attach_requires_reviewed_identity_and_reject_never_merges`, `test_run_07_open_same_campus_match_blocks_new_account_until_decided`, `test_run_07_cancel_pending_and_running_never_resurrects_and_keeps_admissions` | Attach without P2.3 confirmation gives 409 ("same campus"). Reject and defer change review state only; 0 links. Co-located different names (P2.3 `co_located_different_names`): accept gives 409; after `mark_distinct` via the identity API, accept succeeds. Pending cancel: `cancelled`, job `cancelled`, and a repeat cancel is a no-op at the same version; the worker claims nothing. Cancel during a running OSM request: `cancelled` with `stop_reason: cancelled`, 0 shown. A late duplicate handler call returns `skipped` and the run stays cancelled. The earlier-admitted account is still present | VERIFIED |
+| RUN-08 | `test_run_08_expired_rights_stale_version_and_foreign_ids_are_refused` | Stale version: 409. Foreign account attach: 404. Another organization deciding on our run: 404. Observer: 403. 400 days later (provenance past retention): accept gives 409 `candidate_rights_expired`. **0 accounts, 0 links** in the org | VERIFIED |
+| RUN-09 | `test_run_09_unicode_and_long_names_round_trip_and_survive_restart`; e2e `RUN-09 observer sees the run read-only…`, `RUN-09 accepted review and account survive an api/web restart @after-restart` | A 250-character name round-trips. The Urdu `name:ur` with `<b>` markup is returned as raw text and kept as an alias after accept. App restart: the run is still `completed` with 1 accepted, and the account is readable. Browser: the observer has 0 buttons, no "New discovery run" link, sees the synthetic label, and a POST gives 403. After the real `docker compose restart api web` with volumes kept, the accepted review, tally and account page all persist | VERIFIED |
+| RUN-10 | e2e `RUN-10 operator starts a bounded fixture run, reviews evidence and admits one campus` (`scripts/test-e2e.sh`, disposable full stack with real worker container) | The operator navigates Home → Discovery → New run. The source list shows the fixture only, with the synthetic notice, server-area notice and max 30; the operator sets 10 listings and 30 s and submits **by keyboard**. The page polls to "Completed (bounded run)": examined 9, staged 4, rejected 5, shown 4 (max 10), with the bounded-run notice. The card shows "Unverified listing", unknowns and an https source link. Accept as new campus gives review accepted. Opening the account shows the heading, `status discovered; version 1`, and no "qualified" text. **No outbound sends:** the codebase has no messaging client, and egress is limited to `app/egress` used only by `osm.py` (static test) | VERIFIED |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `040b93a` | 0 | 16/16 PASS. Integration 301; unit + contract 237; web 2; **e2e 11 + 2 after restart** (including RUN-10 and RUN-09) |
+| `./scripts/test-integration.sh …test_discovery_runs.py test_discovery.py test_discovery_live.py` at `8ccd204` | 0 | 87 passed |
+| Dev: build, then `alembic upgrade head` (`0008 -> 0009`), then `up --wait`, then `smoke-local.sh` | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+**Code**
+1. `runs.py` imported the egress client, which the P2.2 static guard caught. Construction moved to `osm.adapter_from_settings`, so `osm.py` stays the only egress user.
+2. A second concurrent `accept_new` on the same run row got a 409 instead of converging. Fixed: it now converges when the row already holds the linked account.
+3. **Stop order:** with budget 2 listings and 1 page, a full result was reported `partial` (`page_cap`). The candidate-cap check now runs first, so a full bounded result is `completed`, `candidate_cap`, `truncated` (`8ccd204`; SOURCE suites unchanged and passing).
+
+**Test data:** RUN-09 placed two different school names on identical coordinates. P2.3 rightly raised `co_located_different_names` and admission was blocked; the coordinates were separated, and the behaviour became its own RUN-07 test.
+
+**E2E harness and selectors**
+- `getByLabel` on a select wrapped in its label is ambiguous, so the form now uses explicit `htmlFor`/`id` labels (better for assistive technology).
+- A success message assertion raced the unmount of the control. Debug lines added to the untracked spec were removed by hand.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| No preflight source policy at create | 1 |
+| Handler resurrects terminal runs | 2 |
+| Open same-campus match ignored at accept | 1 |
+| Rights re-check skipped | 1 |
+| Convergence removed (the first attempt's anchor didn't match; rerun with the right anchor) | 1 |
+| Pending cancel becomes a no-op | 1 |
+| Worker ignores the budget snapshot | 2 |
+| Attach without a P2.3 link | 1 |
+| Cancellation never checked by the runner | 1 |
+
+### Security and data integrity
+
+**Inputs and access**
+- No URL, geometry or provider query is accepted from clients, and the provider resolves server-side.
+- Mutations require CSRF and owner or operator; observers are read-only (API and UI).
+- Queries, foreign keys and links are organization-scoped.
+
+**Execution**
+- Policy is re-checked at enqueue, execution and every adapter call.
+- Terminal states are fenced; cancellation is cooperative.
+
+**Accounts and data**
+- Accounts are never auto-created and nothing is deleted on cancel.
+- No facts, contacts or needs are inferred.
+- Rights expiry blocks admission.
+- No messaging, campaigns or model calls exist.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/discovery/{runs,models,routes,runner,osm,cli}.py` | Runs service, worker and review; models; API; cancellation and stop order; adapter factory |
+| `apps/api/app/jobs/{registry,runner}.py` | `discovery.run` v1; `JobContext.environment` and `max_attempts` |
+| `apps/api/alembic/versions/0009_discovery_runs.py`, `tests/integration/test_migrations.py` | Schema; HEAD 0009 |
+| `apps/api/tests/integration/test_discovery_runs.py` (14), `tests/integration/test_discovery.py` | RUN-01…09; static egress test |
+| `apps/web/app/discovery/**`, `apps/web/lib/discovery.ts`, `apps/web/app/page.tsx`, `apps/web/e2e/discovery.spec.ts` | UI and E2E |
+| `docs/adr/ADR-015-…`, `docs/contracts/source-adapters.md`, `docs/runbooks/discovery-sources.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Stop new runs:** disable or unconfigure the provider; creation refuses before writing.
+- **Pause execution:** stop the worker. Pending runs stay visible and can be cancelled.
+- **Keep the history:** runs, decisions, links and accounts are retained.
+- **Revert code:** revert `974e273`, `040b93a` and `8ccd204`.
+- **Schema:** downgrade 0009 only on a disposable database.
+
+### VERDICT: VERIFIED (RUN-01…10), with offline fixture and hermetic stubs; live-source evidence still BLOCKED (P2.2 LIVE-10)
+
+Batch 04 is complete except for the owner-gated LIVE-10. P3.1 is next.

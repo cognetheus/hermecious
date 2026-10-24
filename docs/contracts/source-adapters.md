@@ -180,3 +180,16 @@ The fixture refuses outside `development`/`test`. The live provider refuses with
 5. Add hermetic tests.
 
 Keep every rule above.
+
+## Discovery runs and admission (P2.4, [ADR-015](../adr/ADR-015-discovery-runs-and-admission.md))
+
+| Route | Roles | Behaviour |
+|---|---|---|
+| `GET /api/v1/discovery/sources` | any | Only providers that pass policy now, with the server-bound area, rights, attribution and budget ceilings |
+| `POST /api/v1/discovery/runs` | owner, operator (CSRF) | `{provider, budget:{max_candidates≤30, max_search_pages≤5, max_fetches≤20, max_seconds≤45}, idempotency_key}`. 202 plus the run. Run, `discovery.run` v1 job and outbox event are committed atomically. A replay returns `replayed: true`; a changed request gives 409; an unavailable source gives 400 with nothing written |
+| `GET /api/v1/discovery/runs[?cursor]` and `GET /api/v1/discovery/runs/{id}` | any | Status, counts, `truncated`, partial or error reason, usage, review tally, job status and `exhaustive: false` |
+| `GET /api/v1/discovery/runs/{id}/candidates` | any | ≤30 listings with provenance, rights, expiry, attribution, `unknowns`, P2.3 `matches` and review state |
+| `POST /api/v1/discovery/runs/{id}/cancel` | owner, operator (CSRF) | Idempotent and cooperative |
+| `POST /api/v1/discovery/runs/{id}/candidates/{candidate_id}/decision` | owner, operator (CSRF) | `{action: accept_new\|attach_existing\|reject\|defer, expected_version, idempotency_key, reason, existing_account_id?}`. See ADR-015 §6 |
+
+**Run statuses:** `pending → running → completed | partial | failed | cancelled`, plus `pending → cancelled`. Terminal states are never rewritten.
