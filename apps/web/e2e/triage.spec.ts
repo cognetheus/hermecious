@@ -104,6 +104,7 @@ test("QUALIFY-10 observer reads the assessment without controls", async ({ page 
 test("QUALIFY-10 override and history survive an api/web restart @after-restart", async ({ page }) => {
   await login(page, "operator");
   const panel = await openAccount(page);
-  await expect(panel.getByText(/Reviewer override \(machine said: contact now\)/)).toBeVisible();
-  await expect(panel.getByRole("list", { name: "Assessment history" }).getByRole("listitem")).toHaveCount(2);
+  // Later specs may re-assess; the override must survive in the immutable history either way.
+  const history = panel.getByRole("list", { name: "Assessment history" });
+  await expect(history.getByText(/Revision 2 \(override\): investigate.*Principal is on leave this term/)).toBeVisible();
 });
