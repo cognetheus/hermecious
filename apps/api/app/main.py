@@ -8,6 +8,7 @@ from redis import Redis
 from app.accounts import routes as account_routes
 from app.api import health
 from app.api.middleware import install_error_handling
+from app.approvals import routes as approval_routes
 from app.auth import routes as auth_routes
 from app.auth.dependencies import assert_api_routes_protected
 from app.auth.rate_limit import LoginRateLimiter
@@ -102,6 +103,7 @@ def create_app(
     app.include_router(campaign_routes.router)
     app.include_router(draft_routes.router)
     app.include_router(contact_routes.router)
+    app.include_router(approval_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

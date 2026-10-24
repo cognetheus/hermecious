@@ -58,6 +58,7 @@ class Draft(Base):
         CheckConstraint("NOT sendable", name="never_sendable"),
         CheckConstraint("channel_eligibility = 'not_evaluated'", name="channel_not_evaluated"),
         CheckConstraint("char_length(body_text) <= 650", name="body_length"),
+        CheckConstraint("origin IN ('generated', 'edited')", name="origin"),
         CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'", name="fingerprint_format"),
         CheckConstraint("request_digest ~ '^[0-9a-f]{64}$'", name="request_digest_format"),
         CheckConstraint("(regenerated_from IS NULL) = (regenerate_reason IS NULL)", name="regeneration_reason"),
@@ -93,5 +94,6 @@ class Draft(Base):
     request_digest: Mapped[str] = mapped_column(String(64))
     regenerated_from: Mapped[uuid.UUID | None]
     regenerate_reason: Mapped[str | None] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(String(16), server_default="generated")
     created_by: Mapped[uuid.UUID]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

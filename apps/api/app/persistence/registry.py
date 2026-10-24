@@ -3,6 +3,7 @@
 
 def register_models() -> None:
     import app.accounts.models  # noqa: F401
+    import app.approvals.models  # noqa: F401
     import app.auth.models  # noqa: F401
     import app.campaigns.models  # noqa: F401
     import app.contacts.models  # noqa: F401

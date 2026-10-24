@@ -160,6 +160,87 @@ def compose(
     return sentences
 
 
+def static_sentences() -> list[Sentence]:
+    """Reviewed template text an edit may keep, drop or reorder (never reword)."""
+    return [
+        Sentence("greeting", "Assalam-o-Alaikum,"),
+        Sentence("identity", f"This is the {SENDER['organization']} team in {SENDER['location']}."),
+        Sentence("generic", "We work with schools in Lahore on day-to-day administration."),
+        Sentence("cta", "If it would help, could we share a short overview with you?"),
+        Sentence("opt_out", OPT_OUT),
+        Sentence("signoff", f"— {SENDER['organization']}, {SENDER['location']}"),
+    ]
+
+
+def candidates(
+    *,
+    facts: list[EvidenceFact],
+    usable: set[str],
+    claims: list[OfferClaim],
+    questions: list[tuple[str, str]],
+    snapshot_id: str | None,
+) -> list[Sentence]:
+    """Every sentence an edit may use now: reviewed template text, plus sentences grounded in current evidence."""
+    library = static_sentences()
+    for fact in sorted(facts, key=lambda f: f.fact_id):
+        text = _observation(fact) if fact.fact_id in usable else None
+        if text:
+            grounding = {
+                "fact_id": fact.fact_id,
+                "claim_type": fact.claim_type,
+                "source_record_id": fact.source_id,
+                "storage_class": fact.storage_class,
+                "observed_at": fact.observed_at.isoformat(),
+            }
+            library.append(Sentence("observation", text, grounding))
+    for claim in claims:
+        grounding = {
+            "offer_id": claim.offer_id,
+            "offer_revision_id": claim.revision_id,
+            "capability_code": claim.capability_code,
+            "capability_version": claim.capability_version,
+            "content_sha256": claim.content_sha256,
+        }
+        library.append(Sentence("capability", f"Our team offers {claim.summary.rstrip('.')} for schools.", grounding))
+    for key, question in questions:
+        library.append(Sentence("question", question, {"signal_snapshot_id": snapshot_id, "signal_key": key}))
+    return library
+
+
+def canonical_text(text: str) -> str:
+    """NFC with collapsed whitespace: the form used for parsing, rendering and content digests."""
+    return " ".join(unicodedata.normalize("NFC", text).split())
+
+
+def parse(edited_text: str, library: list[Sentence]) -> list[Sentence]:
+    """Decompose an edit into library sentences (longest match first). Anything else is `UNGROUNDED_TEXT`.
+
+    Edits may drop, reorder or swap grounded sentences; they cannot introduce new wording, so every factual
+    assertion still cites current evidence or a published claim.
+    """
+    text = canonical_text(edited_text)
+    by_text: dict[str, Sentence] = {}
+    for sentence in library:
+        by_text.setdefault(canonical_text(sentence.text), sentence)
+    options = sorted(by_text, key=len, reverse=True)
+    out: list[Sentence] = []
+    i = 0
+    while i < len(text):
+        match = next(
+            (o for o in options if text.startswith(o, i) and (i + len(o) == len(text) or text[i + len(o)] == " ")),
+            None,
+        )
+        if match is None:
+            raise DraftError("UNGROUNDED_TEXT", [text[i : i + 60]])
+        if any(s.text == by_text[match].text for s in out):
+            raise DraftError("DUPLICATE_SENTENCE", [match[:60]])
+        out.append(by_text[match])
+        i += len(match) + 1
+    if not out:
+        raise DraftError("UNGROUNDED_TEXT", ["empty"])
+    return out
+
+
 _FORBIDDEN = [
     (re.compile(r"(?i)https?://|www\.|\.com\b|\.pk\b"), "link"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "email_address"),
@@ -192,8 +273,8 @@ def verify(sentences: list[Sentence]) -> list[str]:
     """Empty list = valid. Every rule is re-checked on the final text, whatever produced it."""
     problems: list[str] = []
     text = render(sentences)
-    if SENDER["organization"] not in text:
-        problems.append("missing_sender_identity")
+    if SENDER["organization"] not in text or not any(s.category == "identity" for s in sentences):
+        problems.append("missing_sender_identity")  # the identity sentence itself, not only the sign-off
     if OPT_OUT not in text:
         problems.append("missing_opt_out")
     if len(text) > MAX_CHARS:

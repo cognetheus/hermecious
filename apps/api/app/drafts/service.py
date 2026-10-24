@@ -147,12 +147,16 @@ def generate(
     idempotency_key: str,
     regenerated_from: uuid.UUID | None = None,
     reason: str | None = None,
+    edited_text: str | None = None,
+    expected_revision: int | None = None,
 ) -> tuple[Draft, bool]:
+    """Generate a draft, or (with `edited_text`) store an edit as a new revision built only from library sentences."""
     account_service._require(actor, Capability.MUTATE)
     org = actor.organization_id
-    digest = hashlib.sha256(
-        json.dumps([str(campaign_id), str(account_id), template_id, locale, str(regenerated_from), reason]).encode()
-    ).hexdigest()
+    request: list[Any] = [str(campaign_id), str(account_id), template_id, locale, str(regenerated_from), reason]
+    if edited_text is not None:
+        request += [composer.canonical_text(edited_text), expected_revision]
+    digest = hashlib.sha256(json.dumps(request).encode()).hexdigest()
 
     def replay() -> Draft | None:
         prior = db.scalar(select(Draft).where(Draft.organization_id == org, Draft.idempotency_key == idempotency_key))
@@ -170,29 +174,36 @@ def generate(
         raise NotFound()
     member = _membership(db, org, campaign_id, account_id)
     now = clock.now()
+    latest = _latest_revision(db, org, campaign_id, account_id)
+    if expected_revision is not None and latest != expected_revision:
+        raise Conflict("the draft changed since you loaded it; reload the latest revision")
     blocked = blockers(db, campaign, member, account, now, environment)
     if blocked:
         raise Conflict("cannot draft: " + ", ".join(blocked))
     assert member is not None  # noqa: S101  # blockers() refuses a missing membership
     context = _context(db, campaign, account, now)
     try:
-        sentences = composer.compose(
-            template_id=template_id,
-            locale=locale,
-            facts=context["facts"],
-            usable=context["usable"],
-            claims=context["claims"],
-            questions=context["questions"],
-            snapshot_id=context["snapshot_id"],
-        )
+        if edited_text is None:
+            sentences = composer.compose(
+                template_id=template_id,
+                locale=locale,
+                facts=context["facts"],
+                usable=context["usable"],
+                claims=context["claims"],
+                questions=context["questions"],
+                snapshot_id=context["snapshot_id"],
+            )
+        else:
+            sentences = composer.parse(edited_text, composer.candidates(**context))
     except composer.DraftError as exc:
         raise Unprocessable(f"{exc.code}: {'; '.join(exc.details)}") from None
     problems = composer.verify(sentences)
     if problems:
         raise Unprocessable("VALIDATION_FAILED: " + ", ".join(problems))
-    budgets = campaign_rules.Budgets.model_validate(campaign.budgets_json)
-    if not campaign_service.consume_quota(db, campaign, "draft", budgets.drafts_per_day, now):
-        raise Conflict("today's draft budget (Asia/Karachi day) is used up")
+    if edited_text is None:  # human edits are not generation and do not use the drafts budget
+        budgets = campaign_rules.Budgets.model_validate(campaign.budgets_json)
+        if not campaign_service.consume_quota(db, campaign, "draft", budgets.drafts_per_day, now):
+            raise Conflict("today's draft budget (Asia/Karachi day) is used up")
     fact_ids = sorted({s.grounding["fact_id"] for s in sentences if s.grounding.get("fact_id")})
     cited_sources = [
         uuid.UUID(s.grounding["source_record_id"]) for s in sentences if s.grounding.get("source_record_id")
@@ -221,17 +232,7 @@ def generate(
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    revision = (
-        int(
-            db.scalar(
-                select(func.coalesce(func.max(Draft.revision), 0)).where(
-                    Draft.organization_id == org, Draft.campaign_id == campaign_id, Draft.account_id == account_id
-                )
-            )
-            or 0
-        )
-        + 1
-    )
+    revision = latest + 1
     draft = Draft(
         organization_id=org,
         campaign_id=campaign_id,
@@ -261,6 +262,7 @@ def generate(
         request_digest=digest,
         regenerated_from=regenerated_from,
         regenerate_reason=reason,
+        origin="generated" if edited_text is None else "edited",
         created_by=actor.user_id,
         created_at=now,
     )
@@ -277,6 +279,8 @@ def generate(
                 "draft_id": str(draft.id),
                 "account_id": str(account_id),
                 "revision": revision,
+                "origin": "generated" if edited_text is None else "edited",
+                "content_digest": content_digest(draft),
                 "template_id": template_id,
                 "mode": campaign.mode,
                 "sendable": False,
@@ -291,6 +295,62 @@ def generate(
             return prior, False
         raise Conflict("a draft was created concurrently; reload") from None
     return draft, True
+
+
+def _latest_revision(db: Session, org: uuid.UUID, campaign_id: uuid.UUID, account_id: uuid.UUID) -> int:
+    return int(
+        db.scalar(
+            select(func.coalesce(func.max(Draft.revision), 0)).where(
+                Draft.organization_id == org, Draft.campaign_id == campaign_id, Draft.account_id == account_id
+            )
+        )
+        or 0
+    )
+
+
+def content_digest(draft: Draft) -> str:
+    """SHA-256 of the NFC, whitespace-canonical body: what a reviewer saw and what an approval binds to."""
+    return hashlib.sha256(composer.canonical_text(draft.body_text).encode()).hexdigest()
+
+
+def is_latest(db: Session, draft: Draft) -> bool:
+    return _latest_revision(db, draft.organization_id, draft.campaign_id, draft.account_id) == draft.revision
+
+
+def edit(
+    db: Session,
+    *,
+    actor: Actor,
+    clock: Clock,
+    environment: str,
+    draft_id: uuid.UUID,
+    edited_text: str,
+    reason: str,
+    expected_revision: int,
+    idempotency_key: str,
+) -> tuple[Draft, bool]:
+    """A human edit is a new immutable revision. It may only drop, reorder or swap library sentences."""
+    previous = get(db, actor.organization_id, draft_id)
+    note = " ".join(reason.split())
+    if not 3 <= len(note) <= 500:
+        raise Unprocessable("reason must be 3-500 characters")
+    if composer.canonical_text(edited_text) == composer.canonical_text(previous.body_text):
+        raise Unprocessable("UNCHANGED: the edit is identical to the revision it starts from")
+    return generate(
+        db,
+        actor=actor,
+        clock=clock,
+        environment=environment,
+        campaign_id=previous.campaign_id,
+        account_id=previous.account_id,
+        template_id=previous.template_id,
+        locale=previous.locale,
+        idempotency_key=idempotency_key,
+        regenerated_from=previous.id,
+        reason=note,
+        edited_text=edited_text,
+        expected_revision=expected_revision,
+    )
 
 
 def regenerate(
@@ -400,6 +460,9 @@ def view(db: Session, draft: Draft, now: datetime, environment: str) -> dict[str
         "assessment_revision": draft.assessment_revision,
         "regenerated_from": str(draft.regenerated_from) if draft.regenerated_from else None,
         "regenerate_reason": draft.regenerate_reason,
+        "origin": draft.origin,
+        "content_digest": content_digest(draft),
+        "latest": is_latest(db, draft),
         "created_at": draft.created_at.isoformat(),
     }
 

@@ -14,6 +14,7 @@ Trust boundary:
 import hashlib
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -84,11 +85,11 @@ def _active(db: Session, org: uuid.UUID, user_id: uuid.UUID | None) -> bool:
     return bool(db.scalar(select(User.active).where(User.organization_id == org, User.id == user_id)))
 
 
-def evaluate(
+def decide(
     db: Session,
     *,
-    actor: Actor,
-    clock: Clock,
+    org: uuid.UUID,
+    now: datetime,
     settings: Settings,
     contact_id: uuid.UUID,
     purpose: policy.Purpose,
@@ -96,13 +97,11 @@ def evaluate(
     template_ref: str | None,
     inbound_ref: str | None,
 ) -> dict[str, Any]:
-    account_service._require(actor, Capability.MUTATE)
-    org = actor.organization_id
+    """A read-only reading (no audit, no commit). Callers that act on it re-read; it is never cached."""
     contact = contacts.get(db, org, contact_id)
     account = db.scalar(select(Account).where(Account.organization_id == org, Account.id == contact.account_id))
     if account is None:  # pragma: no cover  # composite FK
         raise NotFound()
-    now = clock.now()
     fixtures_allowed = settings.environment != "production" and evaluation.provenance(db, org, account) == "synthetic"
 
     campaign_status: str | None = None
@@ -187,24 +186,6 @@ def evaluate(
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    management._audit(
-        db,
-        actor,
-        clock,
-        "channel_eligibility.evaluated",
-        contact.id,
-        {
-            "decision": decision.decision,
-            "reasons": list(decision.reasons),
-            "purpose": purpose,
-            "campaign_id": str(campaign_id) if campaign_id else None,
-            "policy_version": decision.policy_version,
-            "input_digest": input_digest,
-            "live_send_authorized": False,
-        },
-        target_type="contact",
-    )
-    db.commit()
     return {
         "decision": decision.decision,
         "reasons": [{"code": r, "explanation": EXPLANATIONS.get(r, r)} for r in decision.reasons],
@@ -225,3 +206,49 @@ def evaluate(
         "reusable": False,
         "notice": NOTICE,
     }
+
+
+def evaluate(
+    db: Session,
+    *,
+    actor: Actor,
+    clock: Clock,
+    settings: Settings,
+    contact_id: uuid.UUID,
+    purpose: policy.Purpose,
+    campaign_id: uuid.UUID | None,
+    template_ref: str | None,
+    inbound_ref: str | None,
+) -> dict[str, Any]:
+    """`decide`, audited (actor, decision, reasons, input digest, policy version; never an address or proof)."""
+    account_service._require(actor, Capability.MUTATE)
+    result = decide(
+        db,
+        org=actor.organization_id,
+        now=clock.now(),
+        settings=settings,
+        contact_id=contact_id,
+        purpose=purpose,
+        campaign_id=campaign_id,
+        template_ref=template_ref,
+        inbound_ref=inbound_ref,
+    )
+    management._audit(
+        db,
+        actor,
+        clock,
+        "channel_eligibility.evaluated",
+        contact_id,
+        {
+            "decision": result["decision"],
+            "reasons": [r["code"] for r in result["reasons"]],
+            "purpose": purpose,
+            "campaign_id": result["campaign_id"],
+            "policy_version": result["policy_version"],
+            "input_digest": result["input_digest"],
+            "live_send_authorized": False,
+        },
+        target_type="contact",
+    )
+    db.commit()
+    return result
