@@ -434,7 +434,7 @@ def test_cli_dev_only_deterministic_and_audited(app: FastAPI, app_settings: Sett
             env |= {
                 "HERMECIOUS_SESSION_COOKIE_SECURE": "true",
                 "HERMECIOUS_ALLOWED_ORIGINS": "https://ops.example.com",
-                "HERMECIOUS_CONTACT_HMAC_KEYS": "k1:" + "x" * 32,  # required in production since P4.3
+                "HERMECIOUS_CONTACT_HMAC_SECRETS": "k1:" + "x" * 32,  # required in production since P4.3
             }
         return subprocess.run(  # noqa: S603  # fixed argv
             [sys.executable, "-m", "app.discovery.cli", "--organization", str(actor.organization_id)],

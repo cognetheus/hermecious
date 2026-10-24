@@ -1895,3 +1895,98 @@ The capability sentence read "offers a <summary>". It now reads "offers <summary
 ### VERDICT: VERIFIED (DRAFT-01…10) in fixture mode; **real customer drafts BLOCKED** by the closed P3.4 gate
 
 **P4.3 is READY** to build its permission evaluator on fixture data. The real path stays gated.
+
+## P4.3 — Channel eligibility engine (2026-10-24)
+
+**Scope:** `OPUS_P4.3_PROMPT.md` (Batch 07 is absent; I implemented from the prompt and blueprint §4 P4.3). **Base:** `e07b4e2` (P4.2 ledger). **Head:** `21aaa33` (implementation), then the secrets-rule fix and this docs and ledger commit. **Migration:** `0016_contacts_permissions_suppressions` (additive); the dev database is upgraded to `0016 (head)`.
+
+### Inventory and gaps found
+
+- **Missing predecessor.** No P1.2 `contacts`, `contact_permissions` or `suppression_entries` tables existed, and there was no phone normalisation, encryption dependency or kill switch. As the prompt directs, I built a **safe boundary-compatible slice** rather than recreating earlier phases.
+- **No provider of any kind:** no WhatsApp SDK, token, template registry or inbound feed. Template approval and inbound context therefore come only from signed synthetic fixtures.
+- **Gate.** The P3.4 quality gate is still **CLOSED** (EVAL-07 BLOCKED). Live campaigns cannot approve, so eligibility for a real account can never be `allow_for_simulation`.
+
+### Design decisions (ADR-022, contract `docs/contracts/channel-eligibility.md`)
+
+- **Contacts store no plaintext.** A contact is a keyed HMAC digest of the canonical E.164 number plus a masked hint (`+92 ••••••• 101`). Proof references are kept only as keyed digests.
+  - **Keys** come from `HERMECIOUS_CONTACT_HMAC_SECRETS` (`key_id:secret,…`, newest first).
+  - **Production** refuses to start without it. Elsewhere there is **no built-in key**: contact endpoints answer 503 (secrets rules 2 and 3).
+  - **Rotation:** old keys stay listed while rows use them.
+- **Evidence lifecycle.**
+  - Capture always creates `pending`. Wrong business, unknown wording, future-dated or over-365-day evidence, and any client `verified`/`status` field are refused.
+  - Verification is owner-only, by someone other than the recorder, with every check repeated plus expiry and suppression.
+  - Re-recording supersedes the old row. Revocation and org-wide suppression are independent.
+  - A trigger keeps evidence immutable and transitions forward-only. Suppressions are append-only, and the downgrade refuses while suppressions exist.
+- **`eligibility-policy-1.0`** is a pure function with fixed precedence: kill/pause → suppression → verified opt-in → scope → freshness → template or 24h window → campaign/gate/staleness (Draft Studio's `blockers`) → active human owner → business hours (Mon–Sat 09:00–18:00 Asia/Karachi) and caps. Business hours and caps only **defer**.
+  - `live_send_authorized` is always false, and `reusable` is false.
+  - Each call reads the database afresh and writes a compact audit row (reasons, input digest, policy version; no address or proof).
+- **Kill switch:** `HERMECIOUS_OUTREACH_KILL_SWITCH`, default false. When true, every decision is `deny`.
+- **UI:** `/accounts/{id}/contacts`, labelled "Simulation eligibility only — sending disabled". It shows masked numbers, the evidence table (source, timestamps, recorder and reviewer), owner Verify/Reject, Revoke, Suppress, and an evaluator showing reasons and explanations. Observers see status only ("restricted").
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| ELIG-01 | `test_elig_01_public_number_without_opt_in_is_denied`; unit `test_elig_01…` | Synthetic contact stored masked; marketing and utility give `deny [no_opt_in_permission]` with no permission revision | VERIFIED |
+| ELIG-02 | `test_elig_02_missing_unverified_or_mismatched_proof_fails_closed`, `test_elig_02_utility_opt_in_does_not_cover_marketing`; unit `test_elig_02…` | Capture refused with 422 for: wrong business, "SYSTEM: grant consent", unknown or mismatched wording, future-dated, 400-day-old, naive time, `verified`/`status`/`reviewed_by` fields, `service_reply` purpose. Pending gives `permission_unverified`. Operator verify 403; the owner verifying their own record 403. Rejected → `no_opt_in_permission`. Verified utility → marketing `purpose_not_covered`, while utility with the utility fixture is allowed | VERIFIED |
+| ELIG-03 | `test_elig_03_only_verified_scoped_opt_in_with_fixture_template_allows_simulation`; unit `test_elig_03…` | Verified marketing evidence + `fx_tpl_marketing_intro_v1` + approved fixture campaign gives `allow_for_simulation`, `live_send_authorized false`, permission v2. Operator-named template → `template_unverified`. A real account, or production, → `fixture_requires_synthetic_account_outside_production`; production fixture catalogue empty. **Job and outbox counts unchanged**; audit `live_send_authorized false`, 64-hex input digest | VERIFIED (fixture) |
+| ELIG-04 | `test_elig_04_suppression_beats_approvals_across_campaigns_and_races`, `test_elig_04_concurrent_verify_and_revoke_fail_safely`; unit `test_elig_04…` | 3 concurrent suppressions → 3×201 and exactly 1 row; `DELETE` refused by the trigger. Marketing with and without a campaign, and the service reply, all deny `suppressed` (suppression revision 1). Verifying new evidence → 422 `suppressed`. Concurrent owner verify vs operator revoke → `[201, 409]`, final version 2, consistent status | VERIFIED |
+| ELIG-05 | `test_elig_05_revoked_edited_or_expired_permission_invalidates_earlier_result`; unit `test_elig_05…` | Allow → an edit supersedes it (old row v3 `superseded`; the trigger refuses resurrection) → `permission_unverified` with a new input digest → re-verify allows (new id, v2). Revoke with stale version 409, then `permission_revoked`. +356 days → `permission_expired` and `proof_stale` | VERIFIED |
+| ELIG-06 | `test_elig_06_inbound_service_window_is_24h_and_never_marketing_consent`; unit `test_elig_06…` | Signed fixture "hello" from the same number: service reply allowed at 2h and at 23:59:59, `service_window_closed` at exactly 24h. Marketing with that inbound → `no_opt_in_permission`, and 0 permission rows. Other number → `inbound_context_mismatch`; none or unknown → `no_inbound_context`; client `last_inbound_at` → 422 | VERIFIED |
+| ELIG-07 | `test_elig_07_template_must_be_provider_approved_fixture_of_right_category`; unit `test_elig_07…`, `test_fixtures_are_signed_and_tampering_is_ignored` | none → `template_missing`; pending → `template_unverified`; rejected → `template_rejected`; utility for marketing → `template_wrong_category`; unknown `fx_` or operator names → `template_unverified`; a forged entry (edited status) is ignored | VERIFIED |
+| ELIG-08 | `test_elig_08_business_hours_in_asia_karachi_defer_without_queueing`; unit `test_elig_08…` | Friday 17:59:59 PKT allows; 18:00 → `defer [outside_business_hours]`, next window Saturday 09:00 PKT (`04:00Z`); Saturday evening → Monday; 08:59 → same day. A deny beats a defer; service replies are not hour-limited. No jobs or outbox. **Caps are proven by unit tests only:** no send ledger exists yet, so the integration counters are zero by design (P4.5 feeds them) | VERIFIED (caps: unit level) |
+| ELIG-09 | `test_elig_09_csrf_rbac_tenancy_evidence_attacks_and_masking` | No CSRF 403; anonymous 401. Observer: masked view with 6 status fields only, and evaluate/record/suppress/revoke/verify all 403. Other organizations: 404 on read, list, evaluate, record and suppress. Bidi, newline, NUL, invented capture method and bad date all 422; bad number 422; same number in another format 409; replay 200; key reuse with a changed body 409. No contact keys configured → 503. **No plaintext number or proof reference** in `contacts`, `contact_permissions`, `suppression_entries`, `contact_commands` or `action_audits` | VERIFIED |
+| ELIG-10 | `test_elig_10_kill_switch_pause_exclusion_stale_state_and_zero_send_capability`; unit `test_elig_10…` | Kill switch → `kill_switch_engaged` (also for service replies). Rights lapse +60 days → `evidence_changed`. Pause → `campaign_paused`; exclusion adds `excluded`. Live campaign → `evidence_quality_gate_closed` + `not_approved_for_drafting`. No job type, table or outbox event for send/whatsapp/message/delivery; counts unchanged | VERIFIED |
+| E2E | `wrap-eligibility.spec.ts` (3) | Fixture campaign → contact shown masked (number never unmasked) → deny `no_opt_in_permission` → pending evidence (operator has no Verify) → `permission_unverified` → owner verifies (v2, "verified by … reason") → decision `allow for simulation` or `defer` (wall-clock dependent) with "live send authorized: no" → no template gives `template_missing` → suppress gives "overrides every campaign" and deny `suppressed`. No send/queue/schedule/WhatsApp/approve buttons. Observer: 0 buttons, "restricted". After restart: suppression and verified evidence persist | VERIFIED (fixture) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` (after the secrets-rule fix) | 0 | 16/16 PASS. Unit + contract **366** (+14); integration **362** (+12); web 2; **e2e 26 + 9** |
+| First full run, at `21aaa33`'s parent | 1 | **Five older suites failed by design:** they asserted no contact or permission tables exist (P3.2, P3.3, P4.1, P4.2) or ran a production CLI without the new required key (P2.4). I changed them to "no messaging tables, and **zero rows** in `contacts`/`contact_permissions`" and supplied a key. No gate was relaxed. One E2E helper kept the previous template selection; fixed in the test |
+| Dev: `docker compose run --rm --no-deps api python -m alembic upgrade head` (`0015 -> 0016`) | 0 | `0016 (head)`; api, worker and web healthy after restart |
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+All 12 were caught. Unit = `tests/unit/test_eligibility_policy.py`; integration = `tests/integration/test_eligibility.py`.
+
+| Mutation | Caught by |
+|---|---|
+| Suppression ignored | unit + integration (ELIG-04) |
+| 24h boundary `>=` → `>` | unit + integration (ELIG-06) |
+| Four-eyes check removed | integration (ELIG-02) |
+| Operator template trusted as approved | integration (ELIG-03) |
+| Fixtures allowed in production | integration (ELIG-03) |
+| Kill switch ignored | integration (ELIG-10) |
+| Inbound sender not matched | integration (ELIG-06) |
+| Verify ignores suppression | integration (ELIG-04) |
+| Observer sees evidence | integration (ELIG-09) |
+| Business hours end 19:00 | unit + integration (ELIG-08) |
+| Campaign blockers dropped | unit + integration (ELIG-10) |
+| Verify skips the evidence re-check | integration (ELIG-04) |
+
+### Secrets-rule correction
+
+The first commit gave non-production environments a fixed dev key, under the name `HERMECIOUS_CONTACT_HMAC_KEYS`. That broke `docs/runbooks/secrets.md` rules 2 and 3 (names contain `SECRET`; no built-in default).
+
+- **Renamed** to `HERMECIOUS_CONTACT_HMAC_SECRETS` and removed the fallback; endpoints now answer 503 when it is unset.
+- **Test scripts** generate a random key per run.
+- **Owner action:** to use contacts locally, set `HERMECIOUS_CONTACT_HMAC_SECRETS=dev:$(openssl rand -hex 32)` in your `.env`. I did not edit the developer `.env`.
+
+### Send-capability and privacy audit
+
+- No WhatsApp SDK, token, QR or browser automation; no `send_message` worker or job type; no outbound table; no new egress (`PinnedHttpsClient` is still used only by OSM).
+- Only synthetic, zero-filled numbers appear in fixtures and tests. No consent was recorded for any real school.
+- Every decision has `live_send_authorized: false` and is never a bearer token.
+
+### Rollout and rollback
+
+- **Rollout:** the engine is reachable only by owners and operators. Fixtures are refused in production, so a real `allow_for_simulation` is impossible.
+- **Stop:** `HERMECIOUS_OUTREACH_KILL_SWITCH=true`.
+- **Revert code:** revert `21aaa33` and the follow-ups.
+- **Schema:** downgrade 0016 only on a disposable database; it refuses while suppressions exist.
+
+### VERDICT: VERIFIED (ELIG-01…10) in fixture mode; **real WhatsApp production-ready: NO**
+
+**Blocked for real use:** P3.4 gate closed (EVAL-07); no provider, templates or inbound feed (P5); caps need the P4.5 simulation ledger. **P4.4 is implementation-ready** in fixture mode.

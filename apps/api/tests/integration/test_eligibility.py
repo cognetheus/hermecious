@@ -521,6 +521,13 @@ def test_elig_09_csrf_rbac_tenancy_evidence_attacks_and_masking(
     assert suppress(foreign, other, contact).status_code == 404
     other_campaign = {"contact_id": contact, "purpose": "marketing", "campaign_id": campaign["id"]}
     assert foreign.post(url, json=other_campaign, headers=mutation_headers(other)).status_code == 404
+    # Without configured contact keys, nothing can be stored (no built-in fallback key).
+    settings = app.state.settings
+    app.state.settings = settings.model_copy(update={"contact_hmac_secrets": None})
+    try:
+        assert add_contact(client, operator, account, "+92 000 0000188").status_code == 503
+    finally:
+        app.state.settings = settings
     client.cookies.clear()
     assert client.post(url, json={"contact_id": contact, "purpose": "marketing"}).status_code == 401
     # No plaintext number or proof reference is stored anywhere.

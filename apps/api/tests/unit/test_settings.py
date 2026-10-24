@@ -18,7 +18,7 @@ SetEnv = Callable[..., None]
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> SetEnv:
-    for name in [*VALID, "HERMECIOUS_LOG_LEVEL", "HERMECIOUS_SESSION_COOKIE_SECURE", "HERMECIOUS_CONTACT_HMAC_KEYS"]:
+    for name in [*VALID, "HERMECIOUS_LOG_LEVEL", "HERMECIOUS_SESSION_COOKIE_SECURE", "HERMECIOUS_CONTACT_HMAC_SECRETS"]:
         monkeypatch.delenv(name, raising=False)
 
     def set_env(**values: str) -> None:
@@ -68,7 +68,7 @@ def test_production_rejects_debug_logging(env: SetEnv) -> None:
             **VALID,
             "HERMECIOUS_ENV": "production",
             "HERMECIOUS_LOG_LEVEL": "DEBUG",
-            "HERMECIOUS_CONTACT_HMAC_KEYS": KEYS,
+            "HERMECIOUS_CONTACT_HMAC_SECRETS": KEYS,
         }
     )
     with pytest.raises(SettingsError) as excinfo:
@@ -84,7 +84,7 @@ def test_production_accepts_info_logging(env: SetEnv) -> None:
             "HERMECIOUS_LOG_LEVEL": "INFO",
             "HERMECIOUS_SESSION_COOKIE_SECURE": "true",
             "HERMECIOUS_ALLOWED_ORIGINS": "https://ops.example.com",
-            "HERMECIOUS_CONTACT_HMAC_KEYS": KEYS,
+            "HERMECIOUS_CONTACT_HMAC_SECRETS": KEYS,
         }
     )
     settings = load_settings()
@@ -104,15 +104,15 @@ def test_contact_keys_required_in_production_and_well_formed(env: SetEnv) -> Non
     env(**production)
     with pytest.raises(SettingsError) as excinfo:
         load_settings()
-    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
-    env(**production, HERMECIOUS_CONTACT_HMAC_KEYS="")  # blank (compose default) is unset
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_SECRETS"]
+    env(**production, HERMECIOUS_CONTACT_HMAC_SECRETS="")  # blank (compose default) is unset
     with pytest.raises(SettingsError) as excinfo:
         load_settings()
-    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
-    env(**production, HERMECIOUS_CONTACT_HMAC_KEYS="k1:too-short")
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_SECRETS"]
+    env(**production, HERMECIOUS_CONTACT_HMAC_SECRETS="k1:too-short")
     with pytest.raises(SettingsError) as excinfo:
         load_settings()
-    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_KEYS"]
+    assert excinfo.value.names == ["HERMECIOUS_CONTACT_HMAC_SECRETS"]
 
 
 def test_repr_masks_connection_urls(env: SetEnv) -> None:

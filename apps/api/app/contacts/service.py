@@ -28,7 +28,7 @@ from app.auth.service import Actor
 from app.contacts import addresses
 from app.contacts.models import Contact, ContactCommand, ContactPermission, SuppressionEntry
 from app.core.clock import Clock
-from app.core.errors import Conflict, Forbidden, NotFound, Unprocessable
+from app.core.errors import Conflict, DependencyUnavailable, Forbidden, NotFound, Unprocessable
 from app.core.settings import Settings
 from app.eligibility import policy
 
@@ -36,11 +36,10 @@ CLOCK_SKEW = timedelta(minutes=5)
 
 
 def keyring(settings: Settings) -> addresses.Keyring:
-    if settings.contact_hmac_keys is not None:
-        return addresses.parse_keyring(settings.contact_hmac_keys.get_secret_value())
-    if settings.environment == "production":  # pragma: no cover  # settings validation already refuses this
-        raise RuntimeError("HERMECIOUS_CONTACT_HMAC_KEYS is required in production")
-    return addresses.parse_keyring(addresses.DEV_KEYRING)
+    """Fail closed: without configured keys no contact can be stored or matched (there is no built-in key)."""
+    if settings.contact_hmac_secrets is None:
+        raise DependencyUnavailable("contact keys are not configured (HERMECIOUS_CONTACT_HMAC_SECRETS)")
+    return addresses.parse_keyring(settings.contact_hmac_secrets.get_secret_value())
 
 
 # --- idempotency --------------------------------------------------------------------------------------------

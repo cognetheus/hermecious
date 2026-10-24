@@ -13,7 +13,6 @@ import hmac
 import re
 from dataclasses import dataclass
 
-DEV_KEYRING = "dev:hermecious-development-only-contact-key-not-secret"  # non-production only
 _KEY_ID = re.compile(r"[a-z0-9_-]{1,16}")
 _E164 = re.compile(r"\+[1-9]\d{7,14}")
 _PK_LOCAL = re.compile(r"0(3\d{9})")

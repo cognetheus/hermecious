@@ -20,7 +20,8 @@ esac
 # Disposable credentials; --env-file /dev/null keeps the developer .env out.
 export HERMECIOUS_ENV=test HERMECIOUS_ALLOWED_ORIGINS=http://localhost:3000 POSTGRES_USER=hermecious POSTGRES_DB=hermecious_test
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
-export POSTGRES_PASSWORD
+HERMECIOUS_CONTACT_HMAC_SECRETS="test:$(openssl rand -hex 32)"
+export POSTGRES_PASSWORD HERMECIOUS_CONTACT_HMAC_SECRETS
 compose() { docker compose --env-file /dev/null -p "$project" --profile test "$@"; }
 
 cleanup() { compose down -v --remove-orphans >/dev/null 2>&1; }
