@@ -28,6 +28,7 @@ from app.discovery.contracts import (
 from app.egress.https_client import (
     EgressDenied,
     EgressPolicy,
+    PinnedHttpsClient,
     ResponseTooLarge,
     UpstreamError,
     UpstreamTransient,
@@ -99,6 +100,17 @@ def egress_policy(endpoint: str, descriptor: SourceDescriptor) -> EgressPolicy:
         max_response_bytes=descriptor.max_response_bytes,
         user_agent=USER_AGENT,
     )
+
+
+def adapter_from_settings(settings: Settings) -> "OsmOverpassAdapter":
+    """The one place a live OSM adapter and its pinned egress client are built (CLI and worker)."""
+    descriptor = descriptor_from_settings(settings)
+    if not descriptor.enabled or not settings.osm_bbox:
+        from app.discovery.registry import SourcePolicyError  # noqa: PLC0415
+
+        raise SourcePolicyError("provider_disabled")
+    http = PinnedHttpsClient(egress_policy(settings.osm_endpoint, descriptor))
+    return OsmOverpassAdapter(descriptor, endpoint=settings.osm_endpoint, bbox=settings.osm_bbox, http=http)
 
 
 def build_query(bbox: BBox, limit: int) -> str:

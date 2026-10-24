@@ -22,7 +22,6 @@ from app.discovery.contracts import SourceAdapter, SourceQuery
 from app.discovery.fixture import FixtureLahoreSchoolsAdapter
 from app.discovery.registry import FIXTURE_PROVIDER, SourcePolicyError
 from app.discovery.runner import run_discovery
-from app.egress.https_client import PinnedHttpsClient
 from app.persistence.db import make_engine, make_session_factory
 
 
@@ -47,14 +46,13 @@ def main(argv: list[str] | None = None) -> int:
         print("discovery: refused: live providers need --confirm-live", file=sys.stderr)
         return 2
     adapter: SourceAdapter
-    http: PinnedHttpsClient | None = None
+    live_adapter: osm.OsmOverpassAdapter | None = None
     if live:
-        descriptor = osm.descriptor_from_settings(settings)
-        if not descriptor.enabled or not settings.osm_bbox:
-            print("discovery: refused by source policy: provider_disabled", file=sys.stderr)
+        try:
+            adapter = live_adapter = osm.adapter_from_settings(settings)
+        except SourcePolicyError as exc:
+            print(f"discovery: refused by source policy: {exc.reason}", file=sys.stderr)
             return 1
-        http = PinnedHttpsClient(osm.egress_policy(settings.osm_endpoint, descriptor))
-        adapter = osm.OsmOverpassAdapter(descriptor, endpoint=settings.osm_endpoint, bbox=settings.osm_bbox, http=http)
     else:
         adapter = FixtureLahoreSchoolsAdapter()
     factory = make_session_factory(make_engine(str(settings.database_url)))
@@ -82,8 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         except SourcePolicyError as exc:
             print(f"discovery: refused by source policy: {exc.reason}", file=sys.stderr)
             return 1
-    if http is not None:
-        print(f"discovery: endpoint={settings.osm_endpoint} requests={http.requests}", file=sys.stderr)
+    if live_adapter is not None:
+        print(f"discovery: endpoint={settings.osm_endpoint} requests={live_adapter.http.requests}", file=sys.stderr)
     print(report.model_dump_json(indent=2))
     return 0
 

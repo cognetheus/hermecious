@@ -1,8 +1,9 @@
-"""`/api/v1/discovery/*` (P2.2): operator seed import and the staged-candidate list.
+"""`/api/v1/discovery/*`: seed import and staged candidates (P2.2); runs and reviewer admission (P2.4).
 
 Authentication, CSRF and roles come from `authorize_request` (unsafe methods
-are owner-only). There is deliberately no endpoint that starts a live source
-run or accepts a URL; P2.4 owns run management.
+are owner-only unless widened with `allow_roles`). A run names a provider the
+server resolves to a reviewed descriptor and configured area. No endpoint
+accepts a URL, a query string for a provider, or a bounding box.
 """
 
 import base64
@@ -19,9 +20,10 @@ from sqlalchemy import and_, or_, select
 
 from app.accounts.models import SourceRecord
 from app.api.dependencies import AppClock, AppSettings
-from app.auth.dependencies import CurrentActor, authorize_request
+from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
+from app.auth.models import Role
 from app.core.errors import InvalidRequest
-from app.discovery import seed_import
+from app.discovery import runs, seed_import
 from app.discovery.models import DiscoveryCandidate
 from app.persistence.db import DbSession
 
@@ -141,3 +143,114 @@ def list_candidates(
         },
         headers=NO_STORE,
     )
+
+
+# --- P2.4 runs ----------------------------------------------------------------------------------------------
+
+IdempotencyKey = Annotated[str, Field(pattern=r"^[A-Za-z0-9._:-]{8,100}$")]
+
+
+class RunBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Annotated[str, Field(min_length=1, max_length=100)]
+    budget: runs.RunBudget = runs.RunBudget()
+    idempotency_key: IdempotencyKey
+
+
+class ReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: runs.ReviewAction
+    expected_version: Annotated[int, Field(ge=1)]
+    idempotency_key: IdempotencyKey
+    reason: Annotated[str, Field(min_length=3, max_length=1000)]
+    existing_account_id: uuid.UUID | None = None
+
+
+@router.get("/sources")
+def list_sources(actor: CurrentActor, clock: AppClock, settings: AppSettings) -> JSONResponse:
+    """Only providers that pass policy right now, with their configured area and rights summary."""
+    items = [
+        {
+            "provider": o.provider, "label": o.label, "area_label": o.area_label, "synthetic": o.synthetic,
+            "rights_policy_version": o.descriptor.rights_policy_version, "attribution": o.descriptor.attribution,
+            "licence_reference": o.descriptor.licence_reference, "storage": o.descriptor.max_storage_class,
+            "retention_days": o.descriptor.retention_ttl.days, "max_candidates": min(30, o.descriptor.result_limit),
+            "request_quota": o.descriptor.request_quota,
+        }
+        for o in runs.available_sources(settings, clock.now())
+    ]  # fmt: skip
+    ceilings = runs.RunBudget().model_dump()
+    return JSONResponse({"sources": items, "budget_ceilings": ceilings, "city": runs.CITY}, headers=NO_STORE)
+
+
+@router.post("/runs", status_code=202)
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def create_run(
+    body: RunBody, actor: CurrentActor, db: DbSession, clock: AppClock, settings: AppSettings
+) -> JSONResponse:
+    run, created = runs.create_run(
+        db, actor=actor, clock=clock, settings=settings, provider=body.provider, budget=body.budget,
+        idempotency_key=body.idempotency_key,
+    )  # fmt: skip
+    return JSONResponse(runs.run_view(db, run) | {"replayed": not created}, status_code=202, headers=NO_STORE)
+
+
+@router.get("/runs")
+def list_runs(
+    actor: CurrentActor,
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    cursor: Annotated[str | None, Query(max_length=200)] = None,
+) -> JSONResponse:
+    rows = runs.list_runs(db, actor.organization_id, limit, _parse_cursor(cursor) if cursor else None)
+    page = rows[:limit]
+    next_cursor = (
+        base64.urlsafe_b64encode(f"{page[-1].created_at.isoformat()}|{page[-1].id}".encode()).decode()
+        if len(rows) > limit
+        else None
+    )
+    return JSONResponse({"items": [runs.run_view(db, r) for r in page], "next_cursor": next_cursor}, headers=NO_STORE)
+
+
+@router.get("/runs/{run_id}")
+def get_run(run_id: uuid.UUID, actor: CurrentActor, db: DbSession) -> JSONResponse:
+    return JSONResponse(runs.run_view(db, runs.get_run(db, actor.organization_id, run_id)), headers=NO_STORE)
+
+
+@router.get("/runs/{run_id}/candidates")
+def get_run_candidates(run_id: uuid.UUID, actor: CurrentActor, db: DbSession, clock: AppClock) -> JSONResponse:
+    run = runs.get_run(db, actor.organization_id, run_id)
+    items = runs.run_candidates_view(db, run, clock.now())
+    return JSONResponse({"items": items, "attribution": run.attribution, "synthetic": run.provider ==
+                         "fixture_lahore_schools"}, headers=NO_STORE)  # fmt: skip
+
+
+@router.post("/runs/{run_id}/cancel")
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def cancel_run(run_id: uuid.UUID, actor: CurrentActor, db: DbSession, clock: AppClock) -> JSONResponse:
+    run = runs.cancel_run(db, actor=actor, clock=clock, run_id=run_id)
+    return JSONResponse(runs.run_view(db, run), headers=NO_STORE)
+
+
+@router.post("/runs/{run_id}/candidates/{candidate_id}/decision")
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def review_candidate(
+    run_id: uuid.UUID, candidate_id: uuid.UUID, body: ReviewBody, actor: CurrentActor, db: DbSession,
+    clock: AppClock, settings: AppSettings,
+) -> JSONResponse:  # fmt: skip
+    result = runs.review_candidate(
+        db, actor=actor, clock=clock, environment=settings.environment, run_id=run_id, candidate_id=candidate_id,
+        action=body.action, expected_version=body.expected_version, idempotency_key=body.idempotency_key,
+        reason=body.reason, existing_account_id=body.existing_account_id,
+    )  # fmt: skip
+    row = result.run_candidate
+    return JSONResponse(
+        {
+            "candidate_id": str(candidate_id), "review_status": row.display_status, "version": row.version,
+            "account_id": str(result.account_id) if result.account_id else None, "replayed": result.replayed,
+            "converged": result.converged, "decision_id": str(result.decision_id),
+        },
+        headers=NO_STORE,
+    )  # fmt: skip

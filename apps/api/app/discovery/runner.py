@@ -76,6 +76,7 @@ class DiscoveryBudget:
 StopReason = Literal[
     "completed", "candidate_cap", "page_cap", "fetch_cap", "time_cap", "cost_cap", "rate_limited", "timeout",
     "cursor_cycle", "provider_quota", "unavailable", "response_too_large", "upstream_error", "policy_revoked",
+    "cancelled",
 ]  # fmt: skip
 
 
@@ -141,6 +142,7 @@ class _Run:
     environment: str
     clock: Clock
     sleep: Callable[[float], None]
+    should_continue: Callable[[], bool] = lambda: True
     pages: int = 0
     fetches: int = 0
     cost: int = 0
@@ -157,7 +159,11 @@ class _Run:
         return self.elapsed() >= self.budget.max_seconds
 
     def still_permitted(self, adapter: SourceAdapter) -> bool:
-        """Re-check policy before each adapter call; a provider disabled mid-run halts new calls."""
+        """Re-check policy (and cancellation) before each adapter call; either halts new calls."""
+        if not self.should_continue():
+            self.rejected["cancel_requested"] += 1
+            self.stop = "cancelled"
+            return False
         try:
             registry.check_descriptor(adapter.descriptor, self.environment, now=self.clock.now())
         except registry.SourcePolicyError as exc:
@@ -320,7 +326,7 @@ def _observe(
     if run.out_of_time():
         return None, "time_budget_exhausted"
     if not run.still_permitted(adapter):
-        return None, "policy_revoked"
+        return None, str(run.stop)
     run.fetches += int(remote)
     try:
         raw = adapter.fetch(source_key=str(candidate.external_key))
@@ -385,6 +391,7 @@ def run_discovery(
     persist: bool = True,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    should_continue: Callable[[], bool] = lambda: True,
 ) -> DiscoveryFixtureReport:
     source_service._require(actor, Capability.MUTATE)
     descriptor = adapter.descriptor
@@ -399,7 +406,7 @@ def run_discovery(
 
     budget = budget or DiscoveryBudget()
     run = _Run(budget=budget, started=monotonic(), monotonic=monotonic, environment=environment, clock=clock,
-               sleep=sleep)  # fmt: skip
+               sleep=sleep, should_continue=should_continue)  # fmt: skip
     run_id = str(uuid.uuid4())
     now = clock.now()
     candidates = _search(adapter, query, run)
@@ -408,8 +415,8 @@ def run_discovery(
     persisted = already = 0
     staged: Counter[str] = Counter()
     for candidate in candidates:
-        if run.stop == "policy_revoked":
-            run.rejected["policy_revoked"] += 1  # halted: nothing further is stored after revocation
+        if run.stop in ("policy_revoked", "cancelled"):
+            run.rejected[run.stop] += 1  # halted: nothing further is stored after revocation or cancellation
             continue
         observation, rejection = _observe(adapter, candidate, run, now)
         if observation is None:

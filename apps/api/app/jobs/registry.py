@@ -54,6 +54,8 @@ class JobContext:
     organization_id: uuid.UUID
     attempt: int
     now: datetime
+    environment: str | None = None  # P2.4: handlers that select providers re-check policy for this environment
+    max_attempts: int = 1
 
 
 class _Payload(BaseModel):
@@ -126,6 +128,19 @@ def _account_snapshot(db: Session, ctx: JobContext, payload: AccountSnapshotPayl
     return summary
 
 
+def _discovery_run(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.discovery.runs import handle_run_job  # noqa: PLC0415  # avoids an import cycle with app.discovery
+
+    result: dict[str, Any] = handle_run_job(db, ctx, payload)
+    return result
+
+
+class DiscoveryRunPayload(_Payload):
+    """`discovery.run` v1 (P2.4): the run row holds the budget and policy snapshot; the payload only names it."""
+
+    run_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -136,6 +151,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         AccountSnapshotPayload,
         _account_snapshot,
         max_attempts=5,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("discovery.run", 1): JobSpec(
+        "discovery.run",
+        1,
+        DiscoveryRunPayload,
+        _discovery_run,
+        max_attempts=3,
         environments=frozenset({"development", "test", "production"}),
     ),
 }
