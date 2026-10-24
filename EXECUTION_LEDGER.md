@@ -1311,3 +1311,130 @@ P2.4 is next.
 ### VERDICT: VERIFIED (RUN-01…10), with offline fixture and hermetic stubs; live-source evidence still BLOCKED (P2.2 LIVE-10)
 
 Batch 04 is complete except for the owner-gated LIVE-10. P3.1 is next.
+
+## P3.1 — Source-backed research and extraction (2026-10-24)
+
+**Scope:** `OPUS_P3.1_PROMPT.md`. **Base:** P2.4 docs head. **Head:** `82b95f9` (code), plus the docs and ledger commit. **Migration:** `0010_research` (`research_runs`, `research_observations`, `research_claims`); the dev database is upgraded to `0010 (head)`.
+
+### Specification gap (recorded, not hidden)
+
+The prompt binds to `docs/phases/HERMECIOUS_BATCH_05_P3.1-P3.3.md`, which **does not exist** in the repository or nearby folders; only `OPUS_P3.x` and `OPUS_P4.x` prompts were added.
+
+**What served as the specification:** the P3.1 prompt itself (detailed: order, limits and RESEARCH-01…10) and blueprint §4 P3.1.
+
+**The prompt's DTO names** (`ResearchRequest`, `ResearchObservationDTO`, `ExtractedClaimDTO`, `ResearchRunResult`) were mapped onto this codebase as:
+
+| Prompt name | Implementation |
+|---|---|
+| `ResearchRequest` | `ResearchBody` |
+| `ResearchObservationDTO` | observation view |
+| `ExtractedClaimDTO` | `extract.Proposal` and the claim view |
+| `ResearchRunResult` | `run_view` / `run_detail` |
+
+**Owner action:** supply Batch 05 if it differs in any binding way, and this entry will be reconciled.
+
+### Gate
+
+- P2.4 is VERIFIED.
+- P2.2 LIVE-10 remains BLOCKED. P3.1 needs no live discovery source, because research uses associated fixture sources.
+
+### Design decisions (ADR-016)
+
+1. **Sources:** ≤5 sources **already associated** with the account (admitted listing, alias provenance or fact source).
+   - Rights are re-checked at scheduling, execution, review and rendering: expiry, provider rights and URL screen, `metadata_only`, reviewed fetch-licensed descriptor, environment and rights version.
+   - There are no URLs, hostnames or queries in requests.
+2. **Fetch by `(provider, external_key)` only.** The fixture document fetcher is the only enabled fetcher. **Live website research fails closed (`live_fetch_not_authorized`)**, so the live canary is BLOCKED.
+3. **Documents:**
+   - Refused: compressed, non-text media, over 2 MiB, invalid UTF-8, or no visible text.
+   - HTML is reduced to visible text; scripts, styles, iframes and comments are dropped.
+   - Budgets: 60 000 characters per run, 30 s per source, 60 s per run.
+   - No page body is stored; observations keep a hash and counts only.
+4. **Extraction `rules-1.0`:**
+   - English and Urdu rules over P1.2 claim types; exact locators and span hashes.
+   - An independent verifier re-derives each claim from its span.
+   - It abstains on negation and instruction-like text, and never asserts software, ownership, authority or need. At most 25 claims.
+   - **No model** (no approved ModelGateway).
+5. **Excerpts are stored only for `full_allowed` sources** (a database check enforces it) and are masked of emails and long numbers. `derived_only` sources keep the locator and hash only.
+6. **Review:** an idempotency key, a version check and a reason are required. Accept re-checks rights and creates one P1.4 source-supported fact, or links an identical current one.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| RESEARCH-01 | `test_research_01_atomic_run_on_admitted_account_with_two_permitted_sources`; e2e RESEARCH-10 (admitted via P2.4) | Two associated eligible sources. 202 with status `pending`, `rules-1.0`, 2 sources. The `research.run` job payload is `{run_id}`, with 1 outbox event. The worker produces `completed`: 2 processed, 10 proposed, every observation processed | VERIFIED |
+| RESEARCH-02 | `test_research_02_excerpt_anchored_claims_review_into_source_supported_facts`; unit `test_english_claims_carry_exact_locators`, `test_urdu_claims_are_extracted_without_transliteration` | English `campus_count 2` with the exact excerpt sentence, stored under `full_allowed` with an https fixture source URL. Urdu `campus_count 3` (`ہمارے تین کیمپس ہیں۔`) has `locator_only`, no excerpt (`derived_only`), and a valid span hash. 0 facts before review. Accept (strong) gives a `source_supported` fact with excerpt and source; the derived-only fact has no excerpt; audit `account.fact_added` origin `research_review` | VERIFIED |
+| RESEARCH-03 | `test_research_03_evidence_never_crosses_between_similarly_named_campuses` | Same-named Johar Town and DHA accounts. A DHA run citing the Johar source gives 400 `source_not_associated`; a DHA run on its own metadata-only source gives 400. After the Johar run: 0 claims or runs on DHA, 6 claims on Johar | VERIFIED |
+| RESEARCH-04 | `test_research_04_abstains_on_injection_negation_and_absence`; unit abstention (5) and verifier (10) tests | Abstained exactly `{instruction_like_text: 1, negated_statement: 1}`. No `{count: 40}`, no "Excel" or "SYSTEM" text, and claim types limited to signals, campus count and contact channel. The phone claim's excerpt is masked (`[number]`). "No portal" and "every school needs an ERP" give 0 claims. The verifier rejects disallowed type, invalid value, unsupported value, out-of-bounds span, unknown rule, changed span and injected span | VERIFIED |
+| RESEARCH-05 | `test_research_05_revoked_or_expired_rights_store_and_publish_nothing` | Rights expire between scheduling and execution: the observation is `skipped` (`source_rights_expired`) with 0 claims. Accept after expiry gives 409 `source_rights_expired`. Rendering after expiry withholds the excerpt with that reason. 0 facts. Database: 0 non-`full_allowed` claims with excerpt text. Metadata-only sources are refused at scheduling (RESEARCH-03) | VERIFIED |
+| RESEARCH-06 | `test_research_06_unsafe_documents_and_budgets_fail_safely`; unit `test_unsafe_or_unsupported_documents_are_refused` (8), `test_html_is_reduced…`, `test_normalized_text_respects…`, `test_only_the_fixture_provider_can_fetch…` | gzip, PDF, more than 2 MiB and invalid UTF-8 each give `failed` with that reason and 0 claims. A 31 s fetch gives `source_time_budget`. A 61 s first source gives `partial` (`job_time_budget`) and **only one source fetched**. A first-party website source gives 400 `live_fetch_not_authorized`. br and SVG are refused; scripts, iframes, comments and bidi are removed. **SSRF, redirect and DNS:** no URL fetch path exists in research. The only egress client is P2.2's pinned client (LIVE-09), unused here | VERIFIED (fixture). The live fetch path does not exist and is BLOCKED |
+| RESEARCH-07 | `test_research_07_replay_stale_lease_and_redelivery_never_duplicate`, `test_research_07_crash_mid_run_retries_without_duplicates` | Same key gives the same run; the same key on another account gives 409. A stalled worker's lease expires and the rescuer completes; the late `execute` returns `lease_lost`; a redelivered handler is skipped. Exactly 6 claims and 1 observation. A crash after the first source commits gives `retry_wait` with the run still running; the retry completes with 10 claims, so the first source's claims were not doubled | VERIFIED |
+| RESEARCH-08 | `test_research_08_rate_limits_partial_and_cancellation_keep_true_status` | One source 429: `partial` (`rate_limited`), 1 failed, 6 claims. Both 503: `failed` (`unavailable`), 0 claims. Pending cancel: `cancelled`, and the worker claims nothing. Cancel committed during the first fetch: `cancelled`, **1 fetch only** | VERIFIED |
+| RESEARCH-09 | `test_research_09_auth_roles_org_scope_csrf_and_review_races`, `test_research_09_review_replay_is_idempotent` | Anonymous 401; observer POST 403 (GET 200); missing CSRF 403; `source_url` field 422; 6 sources 422. Another org: run, sources and claim review all 404; using our source id gives 400. Observer review 403. Racing accept and reject: `[200, 409]`, ≤1 fact; `research.claim_reviewed` audit present. Review replay returns the same fact; the same key with a different reason gives 409 | VERIFIED |
+| RESEARCH-10 | e2e `research.spec.ts` (3 tests, disposable stack, real worker); `bash scripts/check.sh` | The operator admits the Johar Town listing, opens the account, selects the fixture source and clicks **Run research**. The page polls to "Completed: 6 proposed claims from 1 source(s)" with "2 statement(s) skipped". There is no injection text, "40 campuses" or "Excel" on the page. The claim shows "Proposed (not verified)", the excerpt and an https source link. Accept gives "Accepted by a reviewer"; the Evidence section shows a Source-supported `campus_count: count: 2` with the excerpt and a `account.fact_added` audit. The observer has 0 buttons in Research. After restart, the accepted claim and fact persist. **No sends:** there is no messaging code; egress is unchanged. All prior suites pass | VERIFIED (fixture); **live canary BLOCKED** |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `82b95f9` | 0 | 16/16 PASS. Integration **313** (+11); unit + contract **262** (+25); web 2; **e2e 13 + 3** |
+| `./scripts/test-integration.sh tests/integration/test_research.py` ×2 | 0 | 11 passed each time |
+| Dev: build, `alembic upgrade head` (`0009 -> 0010`), `up --wait`, smoke | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+**Test design**
+- A hand-scripted monotonic tick list was fragile. It was replaced by a fake clock advanced by the fetch itself.
+- Source order follows the sorted run ids, so the test now asserts one fetch rather than which key is fetched first.
+
+**Fixture**
+- The fixture's phone line included "not real", which correctly triggered negation. It was reworded so the extractor's contact-channel rule is exercised.
+- The injection sentence was made claim-shaped, so abstention is actually tested.
+
+**E2E:** the P2.4 after-restart tally assertion was hard-coded, and later specs admit more listings. It now matches a range.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Association check removed | 1 |
+| Metadata-only allowed | 1 |
+| Excerpts for all rights classes | 3 |
+| Injection abstention removed | 8 |
+| Verifier accepts anything | 3 |
+| gzip allowed | 3 |
+| Review skips the rights re-check | 1 |
+| Runner ignores cancellation | 1 |
+| Excerpt redaction removed | 2 |
+| Rendering ignores lapsed rights | 1 |
+
+### Security, privacy and cost
+
+- **Data minimisation:** no page bodies, cookies or raw exceptions are stored. Excerpts are bounded and redacted, and kept only with full rights.
+- **No egress or model:** no URL fetch in research, no model calls and no network in tests (fixture fetcher).
+- **No N+1 fetching:** one fetch per selected source.
+- **Bounded cost:** characters, time, claims and sources are all capped.
+- **Organization scope:** composite FKs and scoped queries throughout.
+- **No duplicate facts:** an identical current fact is linked, not repeated.
+- **No fabricated confidence:** the reviewer chooses the confidence. A proposal is never displayed as verified.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/research/{models,documents,extract,service,routes}.py`, `fixtures/school_documents_v1.json` | Research slice |
+| `apps/api/app/jobs/registry.py`, `app/main.py`, `app/persistence/registry.py` | `research.run` v1; router; models |
+| `apps/api/alembic/versions/0010_research.py`, `tests/integration/test_migrations.py` | Schema; HEAD 0010 |
+| `apps/api/tests/unit/test_research_extract.py` (25), `tests/integration/test_research.py` (11) | Tests |
+| `apps/web/app/accounts/[id]/{research,research-actions}.tsx`, `page.tsx`, `lib/research.ts`, `e2e/research.spec.ts`, `e2e/discovery.spec.ts` | UI and E2E |
+| `docs/adr/ADR-016-…`, `docs/contracts/research.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Stop:** stop scheduling research.
+- **Keep:** runs, claims and facts are retained; facts are corrected through the P1.4 chain.
+- **Revert code:** revert `45d4717` and `82b95f9`.
+- **Schema:** downgrade 0010 only on a disposable database.
+
+### VERDICT: VERIFIED (RESEARCH-01…10) with fixture documents; live website research BLOCKED (not authorized; fails closed)
+
+**P3.2 is UNBLOCKED:** source-backed facts with locators and reviewer acceptance exist for the rubric to read. P3.2 remains subject to the same missing-Batch-05 caveat.
