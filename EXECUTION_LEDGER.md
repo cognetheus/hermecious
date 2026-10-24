@@ -2066,3 +2066,93 @@ Caught on the first pass:
 ### VERDICT: VERIFIED (APPROVAL-01…10) for engineering in fixture mode; **live outreach ready: NO**
 
 **Production status BLOCKED:** P3.4 gate closed, no real opt-in, no provider templates (P5). **P4.5 is implementation-ready** in fixture mode.
+
+## P4.5 — Zero-egress sending simulator and campaign report (2026-10-24)
+
+**Scope:** `OPUS_P4.5_PROMPT.md` (Batch 07 absent). **Base:** `cc7bc86` (P4.4 ledger). **Head:** `f0a7509` (implementation), `e935fe3` (cancel fix and mutation-driven tests), then this docs and ledger commit. **Migration:** `0018_simulations` (additive, separate `simulation_runs` and `simulation_items`); the dev database is upgraded to `0018 (head)`.
+
+### Prerequisites
+
+- P4.3 and P4.4 are VERIFIED **for engineering** (fixture mode).
+- The P3.4 gate is CLOSED (EVAL-07 BLOCKED); there is no real opt-in and there are no provider templates. **Production outreach is therefore not simulated:** live campaigns and production runs use `readiness` mode, which never reaches the transport.
+- No provider adapter, SDK, token or worker send handler existed, and none was added.
+
+### Design decisions (ADR-024, contract `docs/contracts/simulations.md`)
+
+- **Separate tables.** `real_messages_sent = 0` is a check constraint. Items are append-only and unique per (run, account). Lifecycle is only allowed for accepted items, a `sim-<24 hex>` receipt only for simulated deliveries, and attempts are capped at 3. There is one active run per campaign (partial unique index), and idempotency uses a request digest.
+- **`simulation.run` v1** is the only new job type (allowlisted, 3 attempts, payload is the run id only). It considers at most 30 candidates, members first.
+- **Each item is fresh-checked**, in order:
+  1. a contact exists;
+  2. membership is not excluded;
+  3. the latest draft;
+  4. **P4.4 status = `approved_content`**;
+  5. **P4.3 `decide()`** for the approval's exact contact and template, with usage counted **from this run only**;
+  6. then the fake transport.
+  Items commit one at a time, a retried job skips accounts already recorded, and cancellation is checked before each item.
+- **Transport.** `FakeWhatsAppTransport` is deterministic: the `sim-` receipt is a SHA-256 of run, account and content digest. `live_transport()` always raises `LiveTransportForbidden`.
+- **Report.** Buckets and simulated lifecycle carry denominators and `kind: simulated`, plus `reconciled`, missing prerequisites, standing blockers and a report digest. The CSV is redacted and guarded against formula injection. The label "SIMULATION ONLY — 0 real messages sent" appears on every API response, page and export.
+- **UI.** The campaign page gains a "Dry run" section (scenario and **Dry Run**, plus the run list). The run report page shows the label, status (auto-refreshing), per-account reasons and lifecycle, buckets with denominators, missing prerequisites, the CSV link, and **Cancel run**. There is no Send, queue or provider control.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| SIM-01 | `test_sim_01_deterministic_eligible_run_fake_delivery_only` | Completed, fixture mode, label shown, 0 real messages. The approved account is `accepted / sim_delivered` with a `sim-` + 24-hex receipt, 1 attempt. Buckets carry denominators. A second run on the same state has an **identical report digest**. The only new job type is `simulation.run`; no send/message/deliver/WhatsApp outbox events | VERIFIED (fixture) |
+| SIM-02 | `test_sim_02_no_consent_and_revocation_are_denied` | Revoked permission → denied (`approval_approval_stale`, `eligibility_permission_revoked`, `permission_changed`), no receipt. A contact without consent or membership → `not_approved_for_drafting`; no contact → `invalid [no_contact]`. 0 accepted; "real opt-in" prerequisite listed. False proof is refused at capture (ELIG-02) | VERIFIED |
+| SIM-03 | `test_sim_03_opt_out_mid_run_blocks_remaining_recipients_and_other_campaigns`, `test_sim_03_suppression_between_approval_and_eligibility_reads_still_denies` | `opt_out_mid_run`: one accepted, one denied (`suppressed`, `simulated_opt_out`), 1 delivery (an opt-out is never counted as delivered). A **real** suppression committed after the first recipient denies the next recipient (`eligibility_suppressed`) and is denied in another campaign. A suppression landing between the approval and policy reads still denies | VERIFIED |
+| SIM-04 | `test_sim_04_unapproved_stale_content_paused_campaign_and_changed_offer_block` | `stale_approval` → `approval_expired`; unreviewed content → `approval_not_reviewed`; pause → `campaign_paused`; archived offer → `offer_not_published` with the "fresh evidence" prerequisite. A bad template cannot reach a run: approval requires an eligible template (APPROVAL-01) | VERIFIED |
+| SIM-05 | `test_sim_05_quiet_hours_weekend_and_local_day_caps` | `quiet_hours` (Friday 19:00 PKT) → `deferred [outside_business_hours]`, next window Saturday 09:00 PKT (`04:00Z`). `quota` → one accepted and one `daily_cap_reached`, next window the next Asia/Karachi day at opening. Saturday 18:00 PKT → Monday `04:00Z`. Simulated deliveries never carry over to later runs. Service-window boundaries are P4.3 ELIG-06; the simulator's purpose is always marketing, so an inbound "hello" never allows | VERIFIED |
+| SIM-06 | `test_sim_06_mock_429_timeout_and_worker_restart_are_bounded_and_converge` | 429 → delivered on attempt 2. Timeout → `sim_failed` after 3 attempts with no receipt (2 failures counted). `worker_restart_mock`: attempt 1 → `retry_wait` with exactly 1 durable item; after 5 minutes, attempt 2 → completed with one item per account, 2 distinct receipts, and DB row count = considered | VERIFIED |
+| SIM-07 | `test_sim_07_concurrent_runs_idempotency_and_cancel`, `test_sim_07_cancel_requested_mid_run_stops_remaining_items` | Same key, concurrent → `[200, 201]`; same key with another scenario 409; second active run 409 "already active". Cancelling a pending run → `cancelled`, and its job never runs. Concurrent distinct keys → `[201, 409]`. A cancel requested mid-run → `cancelled` with considered 1 and a reconciled report | VERIFIED |
+| SIM-08 | `test_sim_08_thirty_item_mixed_report_reconciles_with_redacted_export` | 32 synthetic accounts, bounded to **30**: accepted 1 + deferred 1 + denied + invalid = 30, all denominators 30; `sim_delivered` 1 of 1 (100%); `reconciled: true`; prerequisites include contact and membership. The CSV line 1 is the label and it has 30 rows. An `=HYPERLINK` name is exported as `'=HYPERLINK…`; no `+92` or body text | VERIFIED |
+| SIM-09 | `test_sim_09_network_spy_registry_and_kill_switch_prove_zero_real_sends`, `test_sim_readiness_mode_never_simulates_delivery` | With a `socket.socket.connect` spy, **0 connects** during a run. `PinnedHttpsClient` construction is trapped and never hit. `HERMECIOUS_LIVE_OUTBOUND_ENABLED=true` changes nothing; `live_transport()` raises. The simulator source imports no HTTP or socket library; no WhatsApp SDK is loaded. No send/message/dispatch/deliver job type and no message/outbound/delivery/send table. `UPDATE … real_messages_sent = 1` is refused. The kill switch makes items deny (`eligibility_kill_switch_engaged`). Readiness mode never reaches the transport | VERIFIED |
+| SIM-10 | e2e `wrap-simulation.spec.ts` (3); `test_sim_10_auth_csrf_cross_org_and_bounds` | UI: fixture campaign → approved content for `+92 ••••••• 102` → **Dry Run** → report with the label, completed, school row `accepted` (sim receipt) or `deferred` (wall-clock hours), buckets "n of N", "Counts reconcile", the standing template blocker and the CSV link; no send/queue/provider buttons. A second run is cancelled or completed. Observer: 0 buttons. After restart: the report and its digest persist. API: no CSRF 403; `max_items 31`, a `send` field or an unknown scenario 422; observer read 200 and start/cancel 403; other organizations 404 (including export); anonymous 401 | VERIFIED (fixture) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` (final) | 0 | 16/16 PASS. Unit + contract **378**; integration **385** (+13); web 2; **e2e 30 + 11** |
+| Earlier full run | 1 | `test_eval_02_03_frozen_universe_and_verdicts` (P3.4, untouched by P4.5) failed once. **Root cause:** with 32 eligible accounts and a 30-account sample ranked by `sha256(seed:id)`, the randomly-ID'd "Late Addition" account falls outside the sample about 6% of the time, and the test assumed it never would. It now asserts both correct outcomes deterministically: sampled → new fingerprint; not sampled → the identical 30 and fingerprint. Nothing was relaxed |
+| Dev: `alembic upgrade head` (`0017 -> 0018`) | 0 | `0018 (head)`; api, worker and web healthy |
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+The first pass caught 8 of 12:
+- approval state not required;
+- simulated opt-out ignored;
+- unbounded retries (the DB attempt check);
+- restart re-processing;
+- quota offset ignored;
+- CSV escape removed;
+- item cap exceeded (the DB check);
+- run usage ignored.
+
+Survivors:
+
+| Survivor | Resolution |
+|---|---|
+| **M3** simulator ignores a policy deny | Only reachable when a suppression lands between the approval read and the policy read. Added a race test → **caught** |
+| **M4** readiness mode simulating delivery | Unreachable with real data (fixtures are refused there). Added a mode test → **caught** |
+| **M7** mid-run cancel ignored | Added a mid-run cancel test, which **exposed a real bug**: sessions use `expire_on_commit=False`, so the final `FOR UPDATE` re-select did not refresh an already-loaded run, and a cancel landing mid-run was reported as `completed`. Fixed with `populate_existing` → **caught** |
+| **M8** service-level one-active check removed | **Equivalent mutant:** the partial unique index produces the same 409 through the IntegrityError path |
+
+**Observation for the owner (not changed, outside scope).** `app/research/service.py` `_lock_run` has the same re-select pattern. Its cancel check also reads the column directly inside the loop, so the observed research tests pass, but the same `populate_existing` hardening is advisable.
+
+### Zero-send evidence
+
+- The network spy saw 0 connects, and the egress client trap was never hit.
+- No WhatsApp SDK, no live transport, no send/dispatch job type or outbox event, and no message tables.
+- `real_messages_sent = 0` is a database constraint.
+- Simulated receipts are `sim-` only, never provider ids.
+
+### Rollout and rollback
+
+- **Stop:** cancel runs; `HERMECIOUS_OUTREACH_KILL_SWITCH=true` makes every item deny.
+- **Revert code:** revert `f0a7509`, `e935fe3` and the follow-ups.
+- **Schema:** downgrade 0018 only on a disposable database; simulation data is disposable.
+
+### VERDICT: VERIFIED (SIM-01…10) for engineering in fixture mode
+
+- **P5.1 implementation-readiness (technical only): YES.** A real adapter can sit behind the same per-item P4.3/P4.4 checks.
+- **Production outreach-readiness: NO.** P3.4 EVAL-07 is blocked, there is no real verified opt-in, and there is no official template approval (P5). Owner sign-off is required before P5.
