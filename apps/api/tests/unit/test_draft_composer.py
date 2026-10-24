@@ -91,6 +91,7 @@ def test_draft_04_offer_and_template_gates() -> None:
         (lambda s: [x for x in s if x.category != "opt_out"], "missing_opt_out"),
         (lambda s: s + [Sentence("cta", "Your outdated paper-based office needs us.")], "deficiency_claim"),
         (lambda s: s + [Sentence("cta", "Dear Principal Ahmed, this is stupid.")], "personal_name"),
+        (lambda s: s + [Sentence("cta", "Your old-fashioned school is backward.")], "insulting_wording"),
         (lambda s: s + [Sentence("cta", "Visit https://evil.example now")], "link"),
         (lambda s: s + [Sentence("cta", "x" * 700)], "too_long"),
         (lambda s: s + [Sentence("observation", "We noticed you use Excel.")], "ungrounded_observation"),
