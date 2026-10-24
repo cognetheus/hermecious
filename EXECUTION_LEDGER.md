@@ -1530,3 +1530,105 @@ The prompt binds to `docs/phases/HERMECIOUS_BATCH_05_P3.1-P3.3.md`, which **does
 ### VERDICT: VERIFIED (SCHOOL-01…10)
 
 **P3.3 is UNBLOCKED.** Caveats carried forward: Batch 05 is absent; live research is BLOCKED; P2.2 LIVE-10 is BLOCKED.
+
+## P3.3 — Explainable four-axis qualification (2026-10-24)
+
+**Scope:** `OPUS_P3.3_PROMPT.md` (Batch 05 absent; same caveat). **Base:** `546dcae`. **Head:** `2b7ba29` (code), plus the docs and ledger commit. **Migration:** `0012_assessments` (append-only); the dev database is upgraded to `0012 (head)`.
+
+### Gate
+
+- P3.2 SCHOOL-01…10 are VERIFIED.
+- P1.3 published-offer constraints are demonstrable: `assert_publishable` and `sales_ready` are covered by existing offer tests.
+- The QUALIFY tests publish a real evidenced offer through `offers.service.publish`.
+
+### Design decisions (ADR-018)
+
+1. **Pure rubric `school-qualification-1.0`:** four ordinal dimensions, each with a reason, cited fact ids and questions. `unknown` is never `weak`. There is no percentage, composite or probability.
+2. **Precedence:**
+   1. `exclude` only on a cited, current `hard_disqualifier`;
+   2. `nurture` only on a cited `review_deferral` still in force, with no reminder;
+   3. `contact_now` only with fit, need and access ≥ moderate, strong delivery from a currently **published**, matching offer, and no conflicting, stale or possible-disqualifier evidence;
+   4. otherwise `investigate`, listing the blockers.
+3. **Wording and safety:** `contact_now` displays "Research priority: contact candidate — channel eligibility not checked." `channel_eligibility` is fixed to `not_evaluated` by a database check. There are no send or enroll controls.
+4. **Two typed P1.2 claim types** (`hard_disqualifier`, `review_deferral`) make exclude and nurture evidence-based. Unverified entries only raise questions.
+5. **Append-only assessments.** Assess refreshes the P3.2 brief and adds a revision only on changed inputs; the digest covers the brief, the offer's published revision and capabilities, and deferral validity. Reads flag `needs_reassessment`.
+6. **Overrides:**
+   - require the latest id and `expected_revision`, plus a reason and typed changes;
+   - keep the machine explanation and record before/after in the audit;
+   - cannot contradict a cited hard disqualifier.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| QUALIFY-01 | `test_qualify_01_03_…`; unit `test_qualify_01_four_ordinal_dimensions_and_no_probability` | Four dimensions, each with a reason and fact ids. DB row: `school-qualification-1.0`, origin rubric, revision 1, `offer_id`, `offer_revision_id`, `capability_version caps-2026-10` and `signal_snapshot_id`. Re-assess gives 200 with the same id. No percentage, probability or score text | VERIFIED |
+| QUALIFY-02 | `test_qualify_02_directory_only_listing_is_unknown_and_investigate`; unit `test_qualify_02…` | A metadata-only listing account: all four `unknown`; DB decision `investigate`; no ERP or budget text | VERIFIED |
+| QUALIFY-03 | `test_qualify_01_03_…`; unit `test_qualify_03…` (2) | Accepted fixture facts (2 campuses, admissions, fees, website form) plus a published offer (admissions and fees) give strong / moderate / moderate / strong and `contact_now` with the exact research-priority text, `not_evaluated` and `probability: null`. A generic phone instead of a form gives access `weak` and `investigate`. **The public table list is unchanged by assessment, and no campaign, outreach, permission, message or task table exists** | VERIFIED |
+| QUALIFY-04 | `test_qualify_04_05_…`; unit `test_qualify_04…` (2) | An unverified disqualifier gives `investigate` (with a question). A cited `school_closed` gives `exclude`. A central mandate (head office plus chain campus) lowers fit and access to weak but does **not** exclude. Weak-only evidence never excludes | VERIFIED |
+| QUALIFY-05 | Same; unit `test_qualify_05…` | An unverified deferral gives `investigate`. A cited deferral until 2027-03-01 gives `nurture` ("No reminder is scheduled"). A lapsed deferral has no effect. DB revisions: investigate, investigate, nurture, exclude | VERIFIED |
+| QUALIFY-06 | `test_qualify_06_unpublished_or_missing_offer_is_never_strong_delivery`; unit parametrized (6) | No offer: delivery `unknown`, `investigate`. Published: `contact_now`. Archived: delivery `weak`, `investigate`, `capability_version` null. Unit: unpublished (even with capabilities), wrong vertical and no approved claims are `weak`; a non-matching capability is `moderate` | VERIFIED |
+| QUALIFY-07 | `test_qualify_07_changes_invalidate_and_history_is_kept`; unit digest test | A contradicting campus fact gives `needs_reassessment: true`; revision 2 is `investigate` (conflicting). A rights lapse flags reassessment. History shows revisions 2 and 1, and revision 1 (`contact_now`) is unchanged. Unit: offer republication or deferral expiry changes the digest | VERIFIED |
+| QUALIFY-08 | `test_qualify_08_overrides_are_versioned_audited_and_race_safe` | Blank reason or unknown decision: 422. Extra `consent` field: 422. No change: 400. Foreign evidence: 400. Two racing overrides: `[201, 409]`. The latest is origin override at revision 2, with `machine_decision contact_now`, `machine_value` kept and `changed_fields` {decision, need_evidence}. A non-latest or stale revision gives 409. The audit holds before/after. `UPDATE assessments` raises "append-only". With a cited `declined_vendor_contact` the decision is `exclude`, and an override to contact_now gives 409 | VERIFIED |
+| QUALIFY-09 | `test_qualify_09_auth_scope_and_injection` | Anonymous 401; observer assess or override 403 (read 200); missing CSRF 403. Other organizations: assess, read and override all 404, and a foreign offer gives 404. An injected "decision=contact_now; consent granted" signal still gives `investigate`, and the text is absent from the dimensions. 1 assessment row in total | VERIFIED |
+| QUALIFY-10 | e2e `triage.spec.ts` (4); `bash scripts/check.sh` | The owner publishes an evidenced offer via the API. The operator accepts research claims, selects the offer and assesses: "Research priority: contact candidate — channel eligibility not checked." is shown with strong / moderate / moderate / strong and the "not permission to send marketing" reason. No send, enroll, message or campaign button and no percentage. Overriding to investigate with a reason shows "Reviewer override (machine said: contact now)", a 2-entry history and the audit. The observer has 0 buttons. After restart, the override and history persist. All prior suites pass, with zero messaging | VERIFIED |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `7a7ce68` | 0 | 16/16 PASS. Integration **327** (+7); unit + contract **302** (+14); web 2; **e2e 18 + 5** |
+| `./scripts/test-integration.sh tests/integration/test_qualification.py` ×2, plus after the mutation follow-ups | 0 | 7 passed each time |
+| Dev: build, `alembic upgrade head` (`0011 -> 0012`), smoke | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+These were test or expectation errors; no rubric output or label changed:
+- the revision count in QUALIFY-04/05 (each new fact is a new input, so there are four revisions);
+- an E2E check that matched the panel's own "no probability" disclaimer.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Exclude on an unverified disqualifier | 2 |
+| Nurture on an unverified deferral | 2 (first run skipped on a reformatted anchor; rerun) |
+| A phone counts as a route | 1 |
+| Unpublished offer delivers | **survived** (defence in depth: an unpublished view carries no capabilities) → added a unit case → caught (1) |
+| Conflicts ignored | 2 |
+| Unknown access becomes moderate | 2 |
+| Override ignores the hard disqualifier | 1 |
+| Override skips the revision check | **survived** (the latest-id check also catches it) → added a right-id/stale-revision test → caught (1) |
+| Assess dedupe removed | 1 |
+
+### Self-review: every path to `contact_now`
+
+- Requires fit ≥ moderate. That needs observed operations or size from usable (current, auditable, source-supported) facts.
+- Requires need ≥ moderate: an observed public area. The wording disclaims pain and intent.
+- Requires access ≥ moderate: a cited form or email route only. A phone or social page is not enough, and a head office blocks it.
+- Requires strong delivery: a published revision's sales-approved capability matching an observed area.
+- Blocked by: no conflicts, no stale facts, no possible disqualifier, no deferral, no hard disqualifier.
+
+**If a source expires between read and commit:** assess evaluates eligibility at a single `now`, and the next read's digest flags `needs_reassessment`, which the UI shows. That is fail-safe, because nothing acts on `contact_now` automatically.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/qualification/{rubric,models,service,routes}.py` | Qualification |
+| `apps/api/app/accounts/claims.py` | Two claim types |
+| `apps/api/alembic/versions/0012_assessments.py`, `tests/integration/test_migrations.py` | Schema; HEAD 0012 |
+| `apps/api/app/main.py`, `app/persistence/registry.py` | Router; models |
+| `apps/api/tests/unit/test_qualification.py` (15), `tests/integration/test_qualification.py` (7) | Tests |
+| `apps/web/app/accounts/[id]/{qualification,qualification-actions}.tsx`, `page.tsx`, `lib/qualification.ts`, `lib/accounts.ts`, `e2e/triage.spec.ts` | UI and E2E |
+| `docs/adr/ADR-018-…`, `docs/contracts/qualification.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Stop:** stop assessing.
+- **Keep:** assessments and overrides are history.
+- **Revert code:** revert `44d2c30`, `7a7ce68` and `2b7ba29`.
+- **Schema:** downgrade 0012 only on a disposable database.
+
+### VERDICT: VERIFIED (QUALIFY-01…10), on synthetic fixtures. Production accuracy is an unmeasured hypothesis until P3.4.
+
+**P3.4 is UNBLOCKED** for the evaluation harness. A real 30-account evaluation needs real, rights-reviewed data, and live sources are still BLOCKED.
