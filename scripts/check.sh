@@ -3,7 +3,7 @@
 # Runs every step even after a failure, prints a summary, and exits non-zero
 # if any step failed.
 #   bash scripts/check.sh                   # everything
-#   bash scripts/check.sh --no-integration  # skip the Docker integration suite (reported as NOT RUN)
+#   bash scripts/check.sh --no-integration  # skip the Docker integration + e2e suites (reported as NOT RUN)
 set -u
 
 cd "$(dirname "$0")/.." || exit 2
@@ -58,8 +58,10 @@ step "web: build" web env NEXT_TELEMETRY_DISABLED=1 npm run build
 
 if [ "$run_integration" -eq 1 ]; then
   step "api: integration tests (disposable stack)" bash scripts/test-integration.sh
+  step "web: browser e2e (disposable full stack)" bash scripts/test-e2e.sh
 else
   results+=("NOT RUN  api: integration tests (disposable stack)")
+  results+=("NOT RUN  web: browser e2e (disposable full stack)")
 fi
 
 printf '\n==> Summary\n'

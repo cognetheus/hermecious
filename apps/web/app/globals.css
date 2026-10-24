@@ -1,0 +1,16 @@
+/* Minimal layout safety: long URLs, names and excerpts wrap instead of widening the page. */
+body {
+  font-family: system-ui, sans-serif;
+  margin: 1rem;
+  max-width: 72rem;
+}
+h1, h2, h3, h4, p, td, th, li, code, blockquote {
+  overflow-wrap: anywhere;
+}
+table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+input, select, textarea {
+  max-width: 100%;
+}
