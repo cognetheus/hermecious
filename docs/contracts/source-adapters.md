@@ -1,0 +1,100 @@
+# Source adapter contract (P2.1)
+
+Rights-aware, bounded discovery over registered source adapters. In P2.1 this means **offline synthetic data only**. Decision record: [ADR-012](../adr/ADR-012-source-adapter-fetch-by-key.md). Code: `apps/api/app/discovery/`.
+
+> A fixture proves nothing about any real school. Every report is labelled `SYNTHETIC FIXTURE DATA: fictional records, not real Lahore businesses or leads`. Real, rights-reviewed discovery begins in P2.2.
+
+## Interface (`contracts.py`, `CONTRACT_VERSION = source-adapter-v1`)
+
+```python
+class SourceAdapter(Protocol):              # synchronous, like the API and worker runtime
+    descriptor: SourceDescriptor
+    def search(self, *, query: SourceQuery, limit: int, cursor: str | None = None) -> Mapping[str, Any]: ...
+    def fetch(self, *, source_key: str) -> Mapping[str, Any]: ...   # provider-scoped key, never a URL
+```
+
+Adapters return raw mappings, and the framework validates them into:
+
+| DTO | Key rules |
+|---|---|
+| `SourceQuery` | city and vertical required; `area` optional; ≤5 keywords of ≤40 characters (`[\w .'-]`). Raw executable queries are impossible |
+| `SourceCandidate` | provider, provider-scoped `external_key` (`[A-Za-z0-9._:-]`, required to be accepted), name, city, vertical, locality, optional URL, **timezone-aware** `observed_at`, ≤5 `claim_hints` (**unverified, never facts, never instructions**). Extra fields rejected |
+| `SourceObservation` | provider, key, observed/expires (aware), optional URL, `permitted_storage_class`, `rights_policy_version`, `data` |
+| `SourcePage` | candidates, opaque `next_cursor` (≤512 characters), `reported_cost_units` |
+
+## Descriptor policy (`registry.py`)
+
+| Field | Purpose |
+|---|---|
+| `provider`, `adapter_version`, `source_kind` | identity; P2.1 enables only `fixture` |
+| `terms_reference`, `rights_policy_version`, `last_reviewed_at` | **all required**; missing means `provider_unreviewed` |
+| `enabled`, `environments` | default deny; the fixture is enabled in development and test only |
+| `permitted_operations` | `search`, `fetch`, `store_metadata`, `store_derived`, `store_full`; each is checked |
+| `max_storage_class`, `retention_ttl` | storage ceiling; provenance `expires_at` is clamped to `observed_at + retention_ttl` |
+| `request_quota`, `result_limit`, `page_size` | provider ceilings, applied alongside the run budget |
+| `allowed_hostnames`, `allow_http` | URL provenance must use these hosts (the P1.2 URL screen also applies) |
+| `requires_credentials` | refused in P2.1 |
+| `supported_cities`, `supported_verticals` | other queries are refused (`unsupported_query`) rather than answered with "nearby" data |
+
+The refusal codes are `unknown_provider`, `provider_disabled`, `provider_unreviewed`, `live_sources_not_enabled`, `provider_not_enabled_in_environment`, `credentials_not_supported`, `operation_not_licensed:<op>` and `unsupported_query`. **All are raised before the adapter is invoked.**
+
+## Run (`runner.run_discovery`)
+
+**Budget** (`DiscoveryBudget`): `max_candidates` 30, `max_search_pages` 5, `max_fetches` 20, `max_seconds` 60, `max_cost_units` 50, `max_retries` 2. These are **ceilings**: a run may lower them, and raising them raises `ValueError`. Budgets are fixed before the first call, and retries consume them.
+
+| Situation | Handling (reason code) |
+|---|---|
+| Page larger than requested | truncated deterministically (`page_oversized`) |
+| Repeated cursor | stop (`cursor_cycle`) |
+| Repeated key in one run | rejected (`duplicate_key`) |
+| Schema problem, naive time, wrong type | rejected (`invalid_record`) |
+| No key | `missing_key` |
+| City or vertical not as queried | `query_mismatch` |
+| URL fails the P1.2 screen (private, metadata, credentials, fragment, scheme) | `unsafe_url` |
+| URL host not in the descriptor | `unapproved_host` |
+| 429 or timeout on search | retried within budget (`search_rate_limited`/`search_timeout`), then stop (`rate_limited`/`timeout`) |
+| Fetch timeout | that record is skipped (`fetch_timeout`), and the run continues |
+| Observation inconsistent | `observation_mismatch`, `rights_version_mismatch`, `invalid_observation` |
+| Storage class above the descriptor ceiling or unlicensed | `rights_denied` (nothing stored) |
+| Observation already expired | `expired_observation` |
+| No source URL | previewed, but **not persisted** (`not_persisted_missing_url`); a URL is never invented |
+
+**Stop reasons:** `completed`, `candidate_cap`, `page_cap`, `fetch_cap`, `time_cap`, `cost_cap`, `rate_limited`, `timeout`, `cursor_cycle`, `provider_quota`.
+
+**Retained content by rights:**
+
+| Storage class | Preview keeps | Persisted (`source_records`) |
+|---|---|---|
+| `metadata_only` | identity, locality, URL | provenance row (URL, provider-scoped key, observed and expiry times, rights version) |
+| `derived_only` | above plus `claim_hints` (unverified) | same provenance row |
+| `full_allowed` | above plus a bounded `excerpt` (≤1000 characters) | same provenance row; **no payload or content columns** |
+
+Raw provider text (for example `raw_page_text`) and free-form `notes` are never copied into reports, logs, the DB or audits.
+
+**Persistence** goes through the P1.2 `add_source_record` with provider `fixture_lahore_schools`, key `fixture_lahore_schools:<key>`, inside the actor's organization. A replay finds existing rows (`already_recorded_count`) and never duplicates them. Another organization running the same fixture gets its own rows. **No accounts, facts, contacts or merges are created**; identity resolution is P2.3, and review is P2.4.
+
+**Report** (`DiscoveryFixtureReport`) contains `run_id`, `correlation_id`, the synthetic label, contract and adapter versions, the rights policy version, the query, `stop_reason`, examined, accepted, rejected, persisted and already-recorded counts, budget limits and consumption, rejection reason counts, and rights-filtered `unverified` previews. An audit row `discovery.fixture_run` (`target_type = discovery_run`) stores the counts.
+
+## Running it (development and test only)
+
+```sh
+docker compose run --rm --no-deps api python -m app.discovery.cli --organization <org-uuid> [--keyword K] [--dry-run]
+```
+
+It refuses outside `development`/`test`. There is **no HTTP endpoint** in P2.1, and P2.4 owns the review UI.
+
+## Fixture dataset
+
+`apps/api/app/discovery/fixtures/lahore_schools_v1.json`:
+- **License:** `kind: synthetic`, policy `fixture-policy:hermecious-synthetic-v1`, fictional records only.
+- **Records** (9):
+  - two different schools sharing a name in different localities;
+  - one record with a missing URL, one stale, and one each of metadata, derived and full rights;
+  - a wrong city;
+  - a metadata-IP URL and an off-allowlist host;
+  - a prompt-injection string, which stays inert data.
+- **Hosts** use `school.fixture.example`, which is non-fetchable and never contacted.
+
+## Extending in P2.2
+
+Add a descriptor with a real rights review, implement the adapter, and register its provider in the P1.2 `PROVIDERS` rights policy. Relax `live_sources_not_enabled` **for that reviewed provider only**. Implement a network client bound to `allowed_hostnames`, with post-DNS private-address and redirect checks (ADR-012). Keep every rule above.

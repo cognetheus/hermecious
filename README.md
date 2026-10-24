@@ -6,7 +6,7 @@ It is **not** a bulk-message bot, a scraper of prohibited sources, or a generic 
 
 ## Status
 
-Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). P1.2 added the rights-aware account, source and fact data model (no UI yet). P1.3 added the versioned offer catalog (`/offers`). P1.4 added account management with evidence entry and corrections (`/accounts`). P1.5 added durable Postgres jobs and a transactional outbox (ADR-011). There is no discovery or messaging yet.
+Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). P1.2 added the rights-aware account, source and fact data model (no UI yet). P1.3 added the versioned offer catalog (`/offers`). P1.4 added account management with evidence entry and corrections (`/accounts`). P1.5 added durable Postgres jobs and a transactional outbox (ADR-011). P2.1 added the rights-aware discovery adapter framework, exercised only with an offline synthetic fixture. There is no real discovery source or messaging yet.
 
 ## Repository layout
 
@@ -31,6 +31,7 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 | [`docs/contracts/offer-catalog.md`](docs/contracts/offer-catalog.md) | Offers: revisions, publication rules, sales-ready projection |
 | [`docs/contracts/account-management.md`](docs/contracts/account-management.md) | Accounts API/UI, evidence entry, corrections, audit trail |
 | [`docs/contracts/job-outbox.md`](docs/contracts/job-outbox.md), [`docs/runbooks/jobs.md`](docs/runbooks/jobs.md) | Durable jobs, transactional outbox, worker operations |
+| [`docs/contracts/source-adapters.md`](docs/contracts/source-adapters.md) | Discovery source adapters, rights policy, budgets (offline fixture) |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: runs `scripts/check.sh` |
 
 ## Setup on a clean machine
