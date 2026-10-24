@@ -12,6 +12,7 @@ from app.auth.dependencies import assert_api_routes_protected
 from app.auth.rate_limit import LoginRateLimiter
 from app.core.clock import Clock, SystemClock
 from app.core.settings import Settings
+from app.offers import routes as offer_routes
 from app.persistence.db import make_engine, make_session_factory
 
 DEPENDENCY_TIMEOUT_SECONDS = 2
@@ -78,6 +79,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(auth_routes.public_router)
     app.include_router(auth_routes.router)
+    app.include_router(offer_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

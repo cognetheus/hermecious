@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
@@ -33,7 +34,9 @@ export default async function HomePage() {
       <p>
         Signed in as {user.display_name ?? user.email} ({user.role})
       </p>
-      <p>Operator console. No features are available yet.</p>
+      <p>
+        <Link href="/offers">Offers</Link>
+      </p>
       <LogoutButton />
     </main>
   );

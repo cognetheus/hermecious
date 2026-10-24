@@ -36,6 +36,8 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("organization_id", "email_canonical"),
+        # Composite FK target so later tables can reference a user *within* an organization (P1.3).
+        UniqueConstraint("organization_id", "id"),
         CheckConstraint("role IN ('owner', 'operator', 'observer')", name="role"),
         CheckConstraint("email_canonical = lower(email_canonical)", name="email_canonical_lowercase"),
     )
