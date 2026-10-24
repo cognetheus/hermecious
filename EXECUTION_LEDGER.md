@@ -1054,3 +1054,134 @@ P2.2 is **not** marked VERIFIED, as Batch 04 requires when the canary cannot run
 **Owner action:** to verify LIVE-10, follow `docs/runbooks/discovery-sources.md` for one bounded run and record the observed endpoint, query bounds, request count, counts and attribution here.
 
 **Effect on P2.3:** Batch 04 allows P2.3 on a "source-compatible imported fixture gate". The staged candidates from the CSV and fixture sources satisfy it, so P2.3 proceeds on that basis.
+
+## P2.3 — Conservative, inspectable, reversible school identity resolution (2026-10-24)
+
+**Scope:** Batch 04 §P2.3 and `OPUS_P2.3_PROMPT.md`. **Base:** `97c2585`. **Head:** `0c9bf27` (code), plus the docs and ledger commit. **Migration:** `0008_identity_resolution` (`identity_suggestions`, `candidate_account_links`, `identity_decisions`).
+
+### Prerequisite: changed, explicitly
+
+P2.2 is **not VERIFIED**: LIVE-10 is BLOCKED on the owner's live opt-in. The P2.3 prompt allows starting only with "a formally accepted, explicit source-compatible fixture-only exception documented as a changed prerequisite", and Batch 04 §0 lists the P2.3 prerequisite as "P2.2 VERIFIED **or source-compatible imported fixture gate**".
+
+**The exception applied here:**
+- P2.3 runs on the P2.2 staging contract (`discovery_candidates`), exercised by hermetic OSM-shaped stubs and operator CSV imports, which LIVE-01…09 verified.
+- **No live result is claimed**, and nothing here depends on real Overpass data.
+- **The owner should ratify this exception.** If it is rejected, P2.3 remains implemented but its gate reverts to "waiting on LIVE-10".
+
+### Preflight
+
+- **Baseline at `97c2585`:** check.sh 16/16 PASS (277 integration, 179 unit + contract).
+- **Existing identity data:**
+  - P1.2 `accounts.normalized_name` and `account_aliases`;
+  - the P1.4 append-only facts with the correction chain;
+  - P1.4 optimistic versions;
+  - P2.2 `discovery_candidates` with `revision`.
+- **No equivalent suggestion, decision or link tables existed**, so three minimal tables were added.
+
+### Decision policy (ADR-014)
+
+1. **Identity is a physical campus, not a brand.** The only automatic outcome is the exact `(org, provider, key)` re-observation, handled by P2.2 staging.
+2. **Matcher `campus-match-1.0`:** pure, deterministic and symmetric; no network or model calls. Features are labels and scores, with `buying_authority` always unknown.
+3. **Disqualifiers come before similarity:**
+   - city, then branch (numbers and words), then locality, then coordinate conflict (0.5 km between points, 2 km when either is an area centre).
+   - Names are compared within the same script only.
+   - A chain domain without site evidence gives `distinct`.
+   - Same provider with different ids gives `insufficient_evidence`.
+4. **Only `suggest_review` and `insufficient_evidence` are stored.** A re-run recomputes open suggestions and never rewrites reviewed ones; it flags them with `evidence_changed_at`.
+5. **Decisions:**
+   - `command_id` makes them idempotent; a different payload gives 409.
+   - A stale version gives 409; it is checked under a row lock and again by a compare-and-swap `UPDATE`.
+   - An append-only log records `reverses_decision_id`.
+6. **Undo of a candidate→account link:** a fact on the account that cites the candidate's source and was recorded after linking puts the suggestion into `reallocation_review`, and the link is kept. The undo completes only after those facts are corrected through the P1.4 chain. **Links are ended, never deleted.**
+7. **Staging revision audits** now also store the previous permitted listing values: the IDENTITY-01 history.
+
+### Gold fixtures (`tests/fixtures/identity_gold_v1.json`, `campus-identity-gold-v1`)
+
+- **Coverage:** 26 labelled pairs, plus the upstream key-rejection case (batch fixture 18), plus duplicated candidates under concurrency (IDENTITY-09 integration).
+- **Expected outcomes:** exact 3, suggest 6, distinct 11, insufficient 6.
+- **Observed:** every case matches its exact resolution **and** its exact ordered reason codes. **Automatic merges of different source identities: 0.** Results are deterministic and symmetric for all 26.
+- **Scope of the claim:** this measures only the fixtures; no general accuracy is claimed.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| IDENTITY-01 | `test_identity_01_reingest_same_key_keeps_one_identity_with_history`, `test_identity_01_reviewed_decisions_survive_later_source_revisions`, gold 01–03 | Re-staging `node/501` with a new name updates the same row (revision 2); the `discovery.candidate_revised` audit holds the previous `display_name`; still 1 source record. The re-run recomputes the open suggestion (version 2, revisions [1, 2]), created 0. After a confirm, an upstream rename gives `evidence_changed_on_reviewed` 1: the status stays `confirmed` at version 2, `evidence_changed_at` is set, and there is still 1 decision | VERIFIED |
+| IDENTITY-02 | `test_identity_02_cross_source_near_names_become_review_suggestions_only`, gold 04/05/14/15/21/26 | Pending `suggest_review` with `[name_near, same_locality]`, algorithm version, evidence source id and `buying_authority: unknown`. 2 candidates kept; 0 accounts and 0 links | VERIFIED |
+| IDENTITY-03 | `test_identity_03_04_cities_campuses_and_chains_stay_distinct`, gold 06–09/19/25 | Lahore vs Gujranwala, Gulberg vs Johar Town campus, DHA Phase 5 vs 6, numbered schools and 1.2 km points are all distinct; 0 suggestions stored; 0 accounts | VERIFIED |
+| IDENTITY-04 | Same test, gold 07/10/11/27, `features.buying_authority` assertions | Same brand and domain: distinct with `shared_domain_weak` / `chain_without_site_evidence`. Every suggestion and API item says `buying_authority: unknown` | VERIFIED |
+| IDENTITY-05 | `test_identity_05_unknowns_stay_unknown_and_originals_are_kept`, gold 12/13/16/17/20 | Urdu spelling variants without a locality, and an exact name with a missing locality, both give `insufficient_evidence`. Urdu-only vs English-only gives `no_comparable_name_script`. The original Urdu `display_name` and `name_local` are unchanged | VERIFIED |
+| IDENTITY-06 | `test_identity_06_confirm_via_api_is_audited_idempotent_and_keeps_provenance` | An operator confirms via the API (CSRF): `confirmed`, version 2. An identical replay returns `replayed: true` with the same `decision_id`: 1 decision, 1 link, 1 `identity.decision` audit. The link joins the candidate to the account (active). Source records and candidates are unchanged; history is exposed | VERIFIED |
+| IDENTITY-07 | `test_identity_07_stale_reused_and_racing_commands_conflict`, `test_identity_07_undo_holds_facts_recorded_after_linking` | A reused command with a different payload, a stale version and an invalid transition each give `Conflict`. Two racing undos at the same version: one result and one `Conflict`, with 3 decisions total. Undo with a later fact citing the candidate's source: `reallocation_review`, `held_fact_ids = [that fact]`, link still active. A second undo gives `Conflict`. After the P1.4 correction, undo gives `undone`; the link is ended (not deleted) with `unlinked_by`; `reverses_decision_id` points to the confirm. All 3 facts are retained; a direct `UPDATE identity_decisions` fails with "append-only". Re-confirm creates a second link (history kept) | VERIFIED |
+| IDENTITY-08 | `test_identity_08_cross_org_observer_and_csrf_are_denied` | An org B resolve considers 0 pairs (no cross-org pairing). Service responses: org B deciding on org A's suggestion gives `NotFound`; an observer gives `Forbidden`. A cross-org link insert gives `IntegrityError` (composite FK). HTTP: unauthenticated 401; observer decision or resolve 403; org B GET or POST 404 with an empty list; owner without CSRF 403; spoofed `organization_id` 422. The suggestion stays pending at version 1 with 0 decisions | VERIFIED |
+| IDENTITY-09 | 26 gold cases plus scorecard, determinism, feature-text and upstream-key tests (`tests/unit/test_identity_matcher.py`, 58 tests); `test_identity_09_malicious_and_long_names_are_inert_and_concurrent_runs_do_not_duplicate` | Gold: all pass, 0 automatic merges. An instruction-like name with `DROP TABLE` is distinct. A long name is truncated before comparison. URL-like and invalid keys are rejected by `SourceKey` (tightened: `//` is impossible). Three concurrent resolver runs: exactly 1 suggestion, 0 errors, no text in features | VERIFIED |
+| IDENTITY-10 | `test_identity_10_restart_and_rerun_keep_decisions_and_create_no_duplicates`; migration suite (upgrade/downgrade, model drift at 0008); full SOURCE + LIVE suites | After a decision, the app instance is closed and recreated; two re-runs give created 0, 0, unchanged 1; the same suggestion id is still `distinct` v2 with 1 decision. Migrations pass. SOURCE-01…10 (37) and LIVE-01…09 (36) still pass | VERIFIED |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `a2c4680` | 0 | 16/16 PASS. Integration **287**; unit + contract **237** (+58); web 2; e2e 9 + 1 |
+| `./scripts/test-integration.sh tests/integration/test_identity.py` ×3 | 0 | 10 passed each time; 11 after `0c9bf27` |
+| `./scripts/test-integration.sh … test_identity.py test_discovery.py test_discovery_live.py` | 0 | 83 passed |
+
+### Defects found and fixed during verification
+
+**Code**
+- A URL-shaped key (`https://…`) passed the P2.2-widened `SourceKey`. The pattern now allows single `/` separators only.
+- `No.` was taken as a branch word. Number words are now excluded.
+
+**Tests whose expectations or setup were wrong** (no gold labels changed)
+- The scorecard tally was miscounted (it now reads 6 suggest and 6 insufficient).
+- The alef-hamza folding expectation was wrong; the matcher deliberately does not fold it.
+- The canonical pair order depends on UUIDs. The test asserted a side, and now asserts the revisions instead.
+- On a fixed clock, two decisions in one instant ordered randomly by id. The test now advances the clock.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Different-city rule removed | 2 |
+| Branch-conflict rule removed | 4 |
+| Same core name auto-treated as exact | 19 |
+| Explicit version check removed | **Survived**: the CAS `UPDATE … WHERE version` still rejects stale writes (defence in depth) |
+| Version check **and** CAS rowcount removed | 1 |
+| Undo ignores held facts | 1 |
+| Replay ignores the payload digest | 1 |
+| Chain-domain rule removed | 2 |
+| Re-run rewrites reviewed suggestions | **Survived at first** → added `test_identity_01_reviewed_decisions_survive_later_source_revisions` (`0c9bf27`) → now caught (1) |
+
+### Security and data integrity
+
+- No network or model calls.
+- Features carry no upstream text; reasons and names are inert data.
+- Organization-scoped composite FKs make cross-org associations impossible at the database level.
+- Roles: observers are read-only. CSRF applies to every mutation.
+- **Nothing is deleted:**
+  - candidates, sources, accounts and facts are never deleted;
+  - links are ended, not removed;
+  - decisions are append-only.
+- **No accounts are created** (P2.4) and no contacts are touched.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/resolution/{matcher,models,service,routes}.py` | Matcher, persistence, review service, API |
+| `apps/api/alembic/versions/0008_identity_resolution.py`, `tests/integration/test_migrations.py` | Schema; HEAD 0008 |
+| `apps/api/app/discovery/{contracts,staging}.py` | `SourceKey` tightened; revision history values |
+| `apps/api/app/main.py`, `app/persistence/registry.py` | Router; model registry |
+| `apps/api/tests/fixtures/identity_gold_v1.json`, `tests/unit/test_identity_matcher.py`, `tests/integration/test_identity.py` | Gold set and IDENTITY-01…10 |
+| `docs/adr/ADR-014-campus-identity-resolution.md`, `docs/contracts/identity-resolution.md`, `README.md` | Decision, contract, documentation |
+
+### Rollback
+
+- **Stop generating suggestions:** stop calling `/identity/resolve`.
+- **Keep the history:** decisions and links are retained.
+- **Reverse associations:** use undo (application-level compensation).
+- **Revert code:** revert `a2c4680` and `0c9bf27`.
+- **Schema:** downgrade 0008 only on a disposable database (rehearsed in the migration suite).
+
+### VERDICT: VERIFIED (IDENTITY-01…10), under the documented P2.2 fixture-gate exception
+
+P2.4 is next.
