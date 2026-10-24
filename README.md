@@ -6,7 +6,7 @@ It is **not** a bulk-message bot, a scraper of prohibited sources, or a generic 
 
 ## Status
 
-Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). P1.2 added the rights-aware account, source and fact data model (no UI yet). P1.3 added the versioned offer catalog (`/offers`). There is no discovery or messaging yet.
+Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tracks each subphase. P0.1 provided the documents, ADR-001 and the secrets rules. P0.2 added a local Docker Compose stack: a FastAPI API, an RQ worker, a Next.js web app, Postgres and Redis, each with health probes. P0.3 added CI, the Alembic migration harness and deterministic tests (`bash scripts/check.sh`). P0.4 added structured logs and the error envelope; P1.1 added operator authentication (create the first owner with [`docs/runbooks/auth.md`](docs/runbooks/auth.md)). P1.2 added the rights-aware account, source and fact data model (no UI yet). P1.3 added the versioned offer catalog (`/offers`). P1.4 added account management with evidence entry and corrections (`/accounts`). There is no discovery or messaging yet.
 
 ## Repository layout
 
@@ -29,6 +29,7 @@ Foundation work is in progress; [`EXECUTION_LEDGER.md`](EXECUTION_LEDGER.md) tra
 | [`docs/runbooks/auth.md`](docs/runbooks/auth.md) | Owner bootstrap, sessions, CSRF, roles, login limits |
 | [`docs/contracts/core-domain.md`](docs/contracts/core-domain.md) | Accounts, sources, facts: schema, rights policy, fact rules |
 | [`docs/contracts/offer-catalog.md`](docs/contracts/offer-catalog.md) | Offers: revisions, publication rules, sales-ready projection |
+| [`docs/contracts/account-management.md`](docs/contracts/account-management.md) | Accounts API/UI, evidence entry, corrections, audit trail |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: runs `scripts/check.sh` |
 
 ## Setup on a clean machine

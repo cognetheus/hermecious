@@ -549,3 +549,40 @@ def test_database_outage_is_a_safe_503(team: Team, app_settings: Settings) -> No
     response = client.get(BASE)
     assert response.status_code == 503 and "db-secret-value" not in response.text
     close_app(down)
+
+
+def test_cas_rejects_a_write_that_lands_between_read_and_update(
+    team: Team, app_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deterministic race: a competing commit happens after the service read the row, before its UPDATE."""
+    account = team.create()
+    from app.accounts import service as account_service
+
+    original = account_service._account
+
+    raced: list[bool] = []
+
+    def read_then_race(db: Any, actor: Any, account_id: uuid.UUID) -> Account:
+        row: Account = original(db, actor, account_id)
+        if raced:  # race exactly once, on the first read
+            return row
+        raced.append(True)
+        with psycopg.connect(str(app_settings.database_url), autocommit=True) as conn:
+            conn.execute(
+                "UPDATE accounts SET canonical_name = 'Racer Rename (Synthetic)', version = version + 1 WHERE id = %s",
+                (account_id,),
+            )
+        return row
+
+    monkeypatch.setattr(account_service, "_account", read_then_race)
+    response = team.send(
+        Role.OPERATOR, "PATCH", f"{BASE}/{account['id']}", {"expected_version": 1, "locality": "Gulberg"}
+    )
+    monkeypatch.undo()
+    assert response.status_code == 409
+    detail = team.get(Role.OWNER, f"{BASE}/{account['id']}").json()
+    assert (detail["canonical_name"], detail["locality"], detail["version"]) == (
+        "Racer Rename (Synthetic)",
+        "Johar Town",
+        2,
+    )

@@ -13,7 +13,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P1.1 | Auth, sessions, CSRF, operator-only access (Batch 02) | verified |
 | P1.2 | Core account/source/fact schema, rights policy, migrations (Batch 02) | verified |
 | P1.3 | Versioned offers and approved capability claims (Batch 02) | verified |
-| P1.4 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
+| P1.4 | Account management API/UI, evidence entry, corrections (Batch 03) | verified |
+| P1.5 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
 
@@ -628,3 +629,108 @@ P1.2 is VERIFIED; the P0.3 remote-CI gap is carried forward. The existing pieces
 ### VERDICT: VERIFIED
 
 Batch 02 is complete. P1.4 is next (Batch 03).
+
+## P1.4 — Account management API and evidence-first admin UI (2026-10-24)
+
+**Scope:** Batch 03 §P1.4 and `OPUS_P1.4_PROMPT.md`. **Base:** `c44df58`. **Head:** `af22b2c` (UI and e2e), plus the race test, docs and ledger commit.
+
+### Preflight
+
+| Prerequisite | Status |
+|---|---|
+| P0.1, P0.2, P0.4, P1.1, P1.2, P1.3 | VERIFIED (ledger evidence above) |
+| P0.3 | Partial: the remote-CI gap is carried forward under the owner's continuous-execution instruction |
+
+Reused: the P1.2 `accounts`, `source_records` and `account_facts` models and services (rights, claims, URL screening), `authorize_request`/`allow_roles`, `AppClock`, the P1.3 UI conventions and `lib/mutate.ts`.
+
+### Conflicts and decisions
+
+1. **Error field name.** Batch 03 §0.3 names the error field `trace_id`; the accepted P0.4 envelope uses `request_id`. Kept `request_id`, because Batch 02 says the actual P0.4 contract wins.
+2. **Source-rights refusals are now 403**, as the Batch 03 table specifies; P1.2 returned 400. A new `policy.RightsViolation` covers provider allowlist, storage class, payload, required key and excerpt rights. Malformed or unsafe URLs, expired sources and claim values stay 400; malformed bodies 422. The P1.2 tests were updated to expect `Forbidden` for rights cases.
+3. **One migration, `0005`, was genuinely needed for corrections:**
+   - `account_facts` gains `supersedes_fact_id` (an organization-scoped self-FK), `correction_reason` (3–1000 characters, required exactly when superseding), `recorded_by` (a scoped user FK) and `UNIQUE(organization_id, id)`.
+   - The partial unique index `uq_account_facts_org_supersedes` allows one successor per fact.
+   - Facts and the new `action_audits` table are append-only (trigger).
+   - Keyset index `(org, updated_at, id)` and a `text_pattern_ops` name-prefix index.
+4. **Corrections are pure append.** The prior fact is never modified; "superseded" is derived from the successor link, and the projection exposes `is_current`.
+5. **Service composition:** P1.2 services gained `commit=False` (flush only), so the new source, the fact and the audit row commit as one transaction.
+6. **City is restricted to Lahore** (the first market) via a `Literal`; widening it is a deliberate change. Archiving uses the existing `excluded` status and is owner-only (`ADMINISTER`). P1.4 has no un-archive.
+7. **Cursor:** base64url `{updated_at, id, filter digest}`, where the digest covers the organization and filters. It is validated but **unsigned**, which is documented as safe because the query is always organization-scoped and the token only encodes a position.
+8. **UI:** `/accounts`, `/accounts/new` (server-guarded) and `/accounts/[id]`, with forms built from labelled native controls, live status regions and minimal global CSS for wrapping. Playwright e2e was added now (desktop and mobile Chromium) because the batch asks for UI evidence. `scripts/test-e2e.sh` runs it on a disposable full stack and is part of `check.sh`; CI installs Chromium's system dependencies.
+
+### Acceptance evidence
+
+| ID | Executed test / command | Result summary | Status |
+|---|---|---|---|
+| ACCOUNT-01 | API `test_operator_creates_account_and_list_and_detail_agree`, `test_two_schools_with_the_same_name_stay_separate`. E2E `ACCOUNT-01` (desktop) | 201 with UUID, `ETag "1"`, Lahore, discovered. List and detail agree; audit `account.created` by the operator. Same-name schools are 2 accounts. UI: created, reloaded, found via search | PASS |
+| ACCOUNT-02 | API `test_source_supported_fact_with_new_source_persists_after_restart` (second app instance). E2E `ACCOUNT-02` and `@after-restart` (`docker compose restart api web`) | Fact and source are created atomically. The detail shows provider, URL, `full_allowed`, rights version, observed time, not stale, `recorded_by`. The UI card shows "Source-supported", the URL, rights, "(Asia/Karachi)" and the excerpt. Still present after the API and web restart | PASS |
+| ACCOUNT-03 | API `test_unknown_erp_is_a_visible_hypothesis_not_absence`. E2E `ACCOUNT-03` | Stored as hypothesis/unknown with no source; `{"status":"none"}` and "supported absence" are refused (400). The UI shows it under "Hypotheses and unknowns (not verified)" with "No source"; no "no software" text exists anywhere | PASS |
+| ACCOUNT-04 | API `test_correction_keeps_history_links_successor_and_is_unambiguous`, `test_correction_requires_reason_and_same_claim_type`. E2E `ACCOUNT-04` | The prior fact keeps `{"count":2}` with `superseded_by` set; the successor `{"count":3}` has `supersedes`, the reason and the recorder; exactly one current campus count. Raw SQL UPDATE or DELETE on the fact and an UPDATE on the audit fail ("append-only"). Audit: created, fact_added, fact_corrected. No reason, a short reason or a different claim type give 422. The UI history shows "Superseded: campus_count: count: 2" and one current fact | PASS |
+| ACCOUNT-05 | `test_concurrent_patches_one_winner_and_stale_patch_preserves_state` (owner vs operator threads), `test_double_correction_has_exactly_one_successor`, `test_if_match_header_is_an_alternative_to_expected_version`, **`test_cas_rejects_a_write_that_lands_between_read_and_update`** (a deterministic race injected between the service read and the UPDATE) | Concurrent writes give `[200, 409]` with the winner's name, version 2 and one `account.updated`. A stale PATCH gives 409 with state intact. Double correction gives `[201, 409]` with one successor and one current fact. If-Match works, and a body/header disagreement gives 400. The injected race gives 409, keeping the racer's name and leaving our locality unapplied | PASS |
+| ACCOUNT-06 | `test_role_matrix_and_csrf_with_no_persisted_writes`. E2E `ACCOUNT-06` | Observer create, patch, fact and archive all give 403; operator archive 403; a fact without CSRF 403; anonymous read and write 401. Counts stay (1, 0, 0). Owner archive gives 200 `excluded`, and a re-archive 409. UI: the observer has no buttons or forms, and `/accounts/new` redirects to `/accounts` | PASS |
+| ACCOUNT-07 | `test_cross_org_accounts_facts_and_sources_are_invisible` | The intruder's list shows only its own account. GET, PATCH, add-fact, a correction of my fact via their account, using my `source_id`, and archive all return **404** without leaking the name. My account stays version 1, with 0 facts in their organization. The DB composite FKs are covered by P1.2 tests | PASS |
+| ACCOUNT-08 | `test_invalid_listing_parameters_are_typed_errors` (8 cases), `test_bad_transitions_and_forbidden_or_stale_sources_write_nothing`, `test_failed_inline_source_rolls_back_with_the_fact`, `test_cursor_from_another_organization_is_rejected`, `test_keyset_pagination_is_complete_stable_and_filter_bound` | Typed `VALIDATION_ERROR` with `request_id` matching the header (422 or 400). discovered→shortlisted and PATCH to excluded give 422. Places full-content gives **403**; a metadata-IP URL 400; an expired source 400 "expired". Afterwards status and version are unchanged, the fact shows stale and counts are unchanged. A failed inline source rolls back the fact too, leaving only `account.created` audited. 7 accounts in 3 pages, complete and ordered; a changed filter or a foreign-organization cursor gives 400 | PASS |
+| ACCOUNT-09 | API `test_markup_long_and_unicode_names_are_bounded_and_returned_as_data`. E2E `ACCOUNT-09` markup on **desktop and mobile (Pixel 7)**; E2E keyboard-only create | The API returns markup as JSON data; 251 characters gives 422; RLO gives 400; an Urdu name is kept; a 1001-character excerpt gives 422. In the browser, `<img onerror>` and `<script>` names render as text: `window.__pwned` undefined, 0 `img` in main, 0 dialogs, no horizontal overflow on mobile. Tab and Enter create an account | PASS |
+| ACCOUNT-10 | API `test_everything_survives_a_restart` (new app instance). E2E `@after-restart` after `docker compose restart api web`. Dev stack: `alembic upgrade head` (`0004 -> 0005`) then smoke. `bash scripts/check.sh` | Status, version, two facts with one current and 4 audits persist. The UI after the real container restart shows the correction and hypothesis. **check.sh 16/16 PASS**: unit + contract 122; integration 171 (P1.1–P1.3 suites included); web Vitest 2; e2e 9 passed plus 1 after restart | PASS |
+
+### Negative paths
+
+- **Postgres loss mid-request:** `test_database_outage_is_a_safe_503` gives 503 without the secret.
+- **Duplicate names across localities:** see ACCOUNT-01.
+- **Changing filters while paginating:** gives 400.
+- **SSRF-shaped source URLs:** refused, and nothing is ever fetched.
+- **Expired facts:** shown as stale.
+- **Archiving with active materialized data:** there is none yet.
+- **UI cache showing a stale version:** a PATCH with the old version gives 409, and the UI shows the error message.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| `list_accounts` drops `organization_id` scoping | `test_cross_org_accounts_facts_and_sources_are_invisible` |
+| `_cas_update` drops `version = expected` | **Initially not caught.** The service's pre-read version check masked it, and the HTTP concurrency test did not interleave inside the read→update window. Added `test_cas_rejects_a_write_that_lands_between_read_and_update`, which passes on the real code and **fails on the mutant** |
+
+### Process notes
+
+- The first e2e run failed on a test-locator ambiguity: "Evidence excerpt (needs full storage rights)" contains "Storage rights". Fixed with exact label matching.
+- The second e2e run reloaded before the correction POST finished; the spec now awaits the 201.
+- An integration test advanced the fixed clock beyond the 24h session lifetime, giving a correct 401; it now uses a 2h source TTL and a 3h advance.
+- The first version of the CAS race test re-raced on the 404/409 disambiguation read; it now races once.
+
+### Security, privacy and data rights
+
+- Every query is organization-scoped from the session; cross-organization access looks like 404.
+- CSRF and roles apply on all writes, and observers are read-only.
+- Rights refusals return 403, and sources are registered as provenance only (no fetch).
+- History is append-only (DB triggers) with audited actor, time and reason.
+- Logs carry event names and IDs only.
+- Synthetic `.example` data only; e2e users are created by the bootstrap function with a random per-run password.
+- **Residual risks:**
+  - The cursor is unsigned (documented as safe).
+  - Name search is prefix-only, by design.
+  - The UI fact value is entered as JSON text, an operator tool that is not polished.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/alembic/versions/0005_account_management.py` | Corrections, audits, indexes, append-only triggers |
+| `apps/api/app/accounts/{models,policy,service,management,routes}.py` | Domain, service and API |
+| `apps/api/app/core/{errors,logging}.py` | `Unprocessable` (422); `account_id`/`fact_id` log keys |
+| `apps/api/app/main.py` | Router |
+| `apps/api/tests/integration/{test_account_management,test_accounts,test_migrations}.py` | Tests (20 new API tests; rights expectations; HEAD `0005`) |
+| `apps/web/{app/accounts/**,lib/accounts.ts,lib/mutate.ts,app/page.tsx,app/layout.tsx,app/globals.css}` | UI |
+| `apps/web/{playwright.config.ts,e2e/*,package.json,package-lock.json,.gitignore}` | E2E (`@playwright/test` 1.64.1) |
+| `scripts/{test-e2e.sh,check.sh}`, `.github/workflows/ci.yml` | E2E harness; CI Chromium dependencies |
+| `docs/contracts/account-management.md`, `README.md`, `docs/runbooks/testing.md` | Documentation |
+
+### Rollback
+
+- **Disposable DB:** `alembic downgrade 0004` (covered by the migration down/up tests).
+- **Data-bearing DB:** back up and prefer a forward repair. Corrections and audits are history.
+- **Code:** revert `2478996` and `af22b2c`, plus the follow-up commit. Reverting must not drop history.
+- **Never** `down -v`.
+
+### VERDICT: VERIFIED
+
+P1.5 is next.

@@ -18,6 +18,7 @@ bash scripts/check.sh --no-integration  # skip Docker integration tests (summary
 | Web install | `npm ci` (fails if `package-lock.json` is stale) |
 | Web lint, types, tests and build | `npm run lint`, `npm run typecheck` (`next typegen` + `tsc`), `npm test` (Vitest), `npm run build` |
 | API integration tests | `scripts/test-integration.sh` |
+| Browser e2e | `scripts/test-e2e.sh` (disposable full stack, Playwright Chromium desktop + mobile, restart check) |
 
 Prerequisites: `uv` 0.7.9, Node 22, Docker with Compose v2, `shellcheck`, `openssl`. CI (`.github/workflows/ci.yml`) installs the same versions and runs `bash scripts/check.sh`.
 
