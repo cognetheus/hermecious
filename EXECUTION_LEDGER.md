@@ -1990,3 +1990,79 @@ The first commit gave non-production environments a fixed dev key, under the nam
 ### VERDICT: VERIFIED (ELIG-01…10) in fixture mode; **real WhatsApp production-ready: NO**
 
 **Blocked for real use:** P3.4 gate closed (EVAL-07); no provider, templates or inbound feed (P5); caps need the P4.5 simulation ledger. **P4.4 is implementation-ready** in fixture mode.
+
+## P4.4 — Approval Studio and immutable draft revisions (2026-10-24)
+
+**Scope:** `OPUS_P4.4_PROMPT.md` (Batch 07 absent). **Base:** `2503044` (P4.3 ledger). **Head:** `3d043fe` (implementation), then the M12 test and this docs and ledger commit. **Migration:** `0017_draft_reviews` (additive: `drafts.origin` plus the append-only `draft_reviews`); the dev database is upgraded to `0017 (head)`.
+
+### Prerequisites
+
+- P4.3 is VERIFIED for engineering (fixture mode).
+- The P3.4 gate is **CLOSED** (EVAL-07 BLOCKED). As the prompt directs, approvals exist **only for fixture campaigns** and every receipt is `simulation_only` (database-enforced). Production approval is unavailable (`production_approval_unavailable`).
+
+### Design decisions (ADR-023, contract `docs/contracts/approvals.md`)
+
+- **No shadow table.** Edits are new `drafts` rows (`origin='edited'`, `regenerated_from` and a reason), with compare-and-swap on `expected_revision` under the campaign lock.
+- **Edits must decompose** into library sentences: the reviewed template sentences plus sentences grounded in *current* usable facts, published claims and P3.2 questions. Anything else gives `UNGROUNDED_TEXT`; repeats give `DUPLICATE_SENTENCE`; an identical edit gives `UNCHANGED`. The P4.2 verifier runs again and now requires the identity sentence itself.
+- **Reviews are append-only receipts** (`approved_content`, `rejected`, `revoked`) bound to the exact revision's NFC content digest.
+  - Approvals also bind the contact, purpose, template, the P4.3 decision, a 7-day expiry and a version vector (campaign, rules, offer, assessment, facts, rights, business, policy, permission, suppression).
+  - Approving requires the latest revision, no staleness, grounding still in the library, a fixture campaign, the contact on the same account, and no P4.3 deny.
+- **Status is computed on read** and is never stored. Expiry, newer revision, Draft Studio staleness, grounding, a live P4.3 re-decision, permission revision and campaign revision can each make it `approval_stale`. Every view returns `queued/sent/whatsapp_template_approved/production_ready: false`.
+- **UI:** the Draft Studio gains an "Edit draft" form, a "Content approval" region with a **Simulation only** badge, contact and template selectors, **Approve content only**, **Reject** and **Revoke approval**, the review history, and the digest and origin.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| APPROVAL-01 | `test_approval_01_only_current_grounded_simulation_eligible_content_is_approved` | No contact 422; no template 422 `NO_TEMPLATE_SELECTED`; unverified contact 409 `no_opt_in_permission`; operator template 409 `template_unverified`. Valid → 201 receipt: `approved_content`, `simulation_only`, revision 1, digest, `allow_for_simulation`, vector (permission v2, CoderzHunt, contact, offer revision). Status `approved_content`, all send flags false. **Job and outbox counts unchanged.** `UPDATE draft_reviews` refused. Audit `simulation_only true`, `live_send_authorized false`. Production → `approval_stale` | VERIFIED (fixture) |
+| APPROVAL-02 | `test_approval_02_edit_or_regenerate_invalidates_the_previous_approval`; unit `test_approval_edits.py` (12) | An edit (observation dropped) gives revision 2, `edited`, new digest, `not_reviewed`; revision 1's approval reads `approval_stale [newer_revision_exists]` with the receipt unchanged. Old digest on revision 2 → 409. Stale `expected_revision` → 409; identical edit → 422 `UNCHANGED`. Regeneration (question template) gives revision 3, which stales revision 2's approval. ur-PK → 422 | VERIFIED |
+| APPROVAL-03 | `test_approval_03_rejection_and_stale_reapproval_fail_safely` | Wrong digest 409. Reject 201 → `rejected`; reject again 409; approve after rejection 409. After pause, approving the new revision → 409 `campaign_paused` and it stays `not_reviewed` | VERIFIED |
+| APPROVAL-04 | `test_approval_04_grounding_verifier_blocks_unsupported_claims_injection_and_markup`, `test_approval_04_rows_not_built_from_the_current_library_are_refused`; unit | `<script>`, "guarantee within 7 days", renamed business, "SYSTEM: ignore…" and a URL → 422 `UNGROUNDED_TEXT`. Identity sentence removed → 422 `missing_sender_identity`. Client `approved` → 422. A hostile fact makes approval 409 `evidence_changed`. A stored revision with a non-library capability sentence → 409 `grounding_changed_capability` while nothing else is stale | VERIFIED |
+| APPROVAL-05 | `test_approval_05_suppression_or_revocation_denies_or_invalidates` | Revoking the permission → `approval_stale` (`eligibility_permission_revoked`, `permission_changed`). A concurrent approve and suppress of a second contact → suppress 201, approve 201 or 409; the final state is **never** `approved_content` (if approved, `eligibility_suppressed`). Re-approval 409 | VERIFIED |
+| APPROVAL-06 | `test_approval_06_pause_rights_offer_exclusion_gate_and_expiry_stale_the_approval` | +60 days → `evidence_changed` (back to current after rewinding); +7 days → `approval_expired`; pause → `campaign_paused` and `campaign_changed`; exclusion → `excluded`; offer archived → `offer_not_published`. Gate: production makes fixture approvals stale (APPROVAL-01), and live campaigns cannot reach approval (`production_approval_unavailable`) | VERIFIED |
+| APPROVAL-07 | `test_approval_07_concurrent_reviewers_and_idempotency_are_deterministic` | Same key, concurrent → `[200, 201]` with one id; same key with a different reason 409. Revoke, then two reviewers race → `[201, 409]`. Concurrent edits with the same expected revision → `[201, 409]`. History seq [3, 2, 1] = approved, revoked, approved | VERIFIED |
+| APPROVAL-08 | `test_approval_08_org_csrf_rbac_contact_binding_and_masking` | No CSRF 403; `send` or `queue` fields 422; another account's contact 422 `CONTACT_NOT_FOR_ACCOUNT`; the receipt has no address. Observer: read 200; approve, reject, revoke and edit 403. Other organizations: 404 on reviews, approve, revoke and edit. Anonymous 401. Plain-text rendering only (React text nodes; markup is refused by the parser) | VERIFIED |
+| APPROVAL-09 | `test_approval_09_restart_replay_revocation_and_old_revisions_never_restore_approval` | Revoke → `revoked`. Replaying the original approve key → 200 with the same receipt, **status stays `revoked`**. Revoking a non-current approval 409. A fresh app instance over the same DB → `revoked`. Approving the older revision → 409 `newer_revision_exists`; the new revision approves normally; revision 1 history = revoked, approved | VERIFIED |
+| APPROVAL-10 | e2e `wrap-review.spec.ts` (3); `bash scripts/check.sh` | Fixture campaign → draft → contact `+92 ••••••• 102` with owner-verified evidence → `<script>` edit shows `UNGROUNDED_TEXT` → grounded edit gives "Revision 2 … edited by a person" → "Simulation only" badge, "Not reviewed" → approve without a contact gives `NO_CONTACT_SELECTED` → suppressed contact `101` refused (`suppressed`) → contact `102` gives "Content approved (simulation only) — not queued, not sent, not a WhatsApp template approval". No send/queue/schedule/WhatsApp/dispatch buttons. Pause → "Approval stale — … campaign_paused". Observer: 0 buttons. After restart: still stale, history kept | VERIFIED (fixture) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` (final) | 0 | 16/16 PASS. Unit + contract **378** (+12); integration **372** (+10); web 2; **e2e 28 + 10** |
+| First full run | 1 | `wrap-review` navigated before the approve-for-drafting click finished (a test race). Fixed by waiting for the decision, as the other specs do |
+| First approval run | 1 | An edit that removed the identity sentence passed, because the sign-off still named CoderzHunt. **Real gap:** the verifier now requires the identity sentence |
+| Dev: `alembic upgrade head` (`0016 -> 0017`) | 0 | `0017 (head)`; api, worker and web healthy |
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+13 of 14 were caught on the first pass. The 14th, M12 (the library re-check), **survived**: every natural path that breaks grounding also trips Draft Studio staleness first. I added `test_approval_04_rows_not_built_from_the_current_library_are_refused`, which then **caught** it.
+
+Caught on the first pass:
+- digest check removed;
+- newer revision ignored;
+- approve or status ignoring P4.3;
+- the parser accepting new wording;
+- expiry ignored;
+- contact binding removed;
+- double approval;
+- the edit compare-and-swap removed;
+- revoking any review;
+- identity sentence optional;
+- a rejected revision being approvable;
+- campaign revision not compared.
+
+### Send-authority audit
+
+- No route queues, schedules, dispatches or sends. No job type or outbox event was added.
+- `simulation_only` is a database check. Approval never changes contact permission rows.
+
+### Rollback
+
+- **Stop:** stop using the review endpoints.
+- **Revert code:** revert `3d043fe` and the follow-ups.
+- **Schema:** downgrade 0017 only on a disposable database.
+
+### VERDICT: VERIFIED (APPROVAL-01…10) for engineering in fixture mode; **live outreach ready: NO**
+
+**Production status BLOCKED:** P3.4 gate closed, no real opt-in, no provider templates (P5). **P4.5 is implementation-ready** in fixture mode.

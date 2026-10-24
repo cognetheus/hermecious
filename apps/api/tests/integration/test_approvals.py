@@ -455,3 +455,39 @@ def test_approval_09_restart_replay_revocation_and_old_revisions_never_restore_a
     history = client.get(f"/api/v1/drafts/{d['id']}/reviews").json()
     assert [h["decision"] for h in history["items"]] == ["revoked", "approved_content"]
     assert history["status"]["state"] == "revoked"
+
+
+def test_approval_04_rows_not_built_from_the_current_library_are_refused(
+    app: FastAPI, client: TestClient, operator: str, ready: Setup, clock: FixedClock
+) -> None:
+    """Defence in depth: a stored revision whose sentence is not in today's library (e.g. written by another code
+    path) cannot be approved, even when nothing else about the campaign or evidence is stale."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from app.drafts.models import Draft  # noqa: PLC0415
+
+    with db(app) as session:
+        source = session.scalar(select(Draft).where(Draft.id == uuid.UUID(ready.draft["id"])))
+        assert source is not None
+        sentences = [dict(s) for s in source.sentences_json]
+        target = next(s for s in sentences if s["category"] == "capability")
+        target["text"] = "Our team offers a complete school ERP for schools."  # not a published claim
+        body = " ".join(s["text"] for s in sentences)
+        columns = {c.name: getattr(source, c.key) for c in Draft.__table__.columns}
+        columns |= {
+            "id": uuid.uuid4(),
+            "revision": source.revision + 1,
+            "sentences_json": sentences,
+            "body_text": body,
+            "idempotency_key": key(),
+            "regenerated_from": source.id,
+            "regenerate_reason": "written outside the composer",
+            "created_at": clock.now(),
+        }
+        session.execute(Draft.__table__.insert().values(**columns))  # type: ignore[attr-defined]
+        session.commit()
+        forged_id = str(columns["id"])
+    forged = client.get(f"/api/v1/drafts/{forged_id}").json()
+    assert forged["status"] == "needs_review"  # nothing else is stale
+    refused = approve(client, operator, forged, ready.contact)
+    assert refused.status_code == 409 and "grounding_changed_capability" in refused.json()["error"]["message"]
