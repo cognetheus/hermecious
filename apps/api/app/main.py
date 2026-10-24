@@ -14,6 +14,7 @@ from app.auth.rate_limit import LoginRateLimiter
 from app.core.clock import Clock, SystemClock
 from app.core.settings import Settings
 from app.discovery import routes as discovery_routes
+from app.evaluation import routes as evaluation_routes
 from app.jobs import routes as job_routes
 from app.offers import routes as offer_routes
 from app.persistence.db import make_engine, make_session_factory
@@ -94,6 +95,7 @@ def create_app(
     app.include_router(research_routes.router)
     app.include_router(signal_routes.router)
     app.include_router(qualification_routes.router)
+    app.include_router(evaluation_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app
