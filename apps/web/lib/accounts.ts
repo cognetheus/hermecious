@@ -78,6 +78,8 @@ export const CLAIM_TEMPLATES: Record<string, Record<string, unknown>> = {
   software_in_use: { status: "unknown" },
   website_presence: { status: "unknown" },
   public_contact_channel: { channel: "website_form" },
+  hard_disqualifier: { reason: "school_closed" },
+  review_deferral: { reason: "asked_to_reconnect_later", until: "2027-01-31" },
 };
 
 export const PROVIDERS = ["manual_entry", "owner_seed_list", "first_party_website", "google_places"] as const;

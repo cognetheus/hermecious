@@ -81,6 +81,19 @@ class PublicContactChannel(_Claim):
     channel: Literal["website_form", "public_phone_listed", "public_email_listed", "social_page"]
 
 
+class HardDisqualifier(_Claim):
+    """P3.3: a documented reason the school must not be pursued (respected as `exclude`)."""
+
+    reason: Literal["school_closed", "not_a_school", "outside_service_area", "declined_vendor_contact"]
+
+
+class ReviewDeferral(_Claim):
+    """P3.3: a documented request or reason to revisit later (drives `nurture`; creates no reminder)."""
+
+    reason: Literal["asked_to_reconnect_later", "contract_in_place", "budget_cycle", "term_in_progress"]
+    until: Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+
+
 CLAIMS: dict[str, type[_Claim]] = {
     "campus_count": CampusCount,
     "school_levels": SchoolLevels,
@@ -90,6 +103,8 @@ CLAIMS: dict[str, type[_Claim]] = {
     "software_in_use": SoftwareInUse,
     "website_presence": WebsitePresence,
     "public_contact_channel": PublicContactChannel,
+    "hard_disqualifier": HardDisqualifier,
+    "review_deferral": ReviewDeferral,
 }
 
 
