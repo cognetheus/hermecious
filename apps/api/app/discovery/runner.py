@@ -1,9 +1,12 @@
-"""Bounded, rights-aware discovery run over a registered adapter (P2.1).
+"""Bounded, rights-aware discovery run over a registered adapter (P2.1, extended in P2.2).
 
 Order of guarantees: policy is checked before the adapter is called; budgets
 are fixed before the first call and can only be lowered; every record is
 validated individually; only rights-permitted provenance is persisted, via
 the P1.2 source service; nothing creates, merges or contacts accounts.
+P2.2: policy is re-checked before every adapter call (a provider disabled
+mid-run stops it), Retry-After/backoff waits come out of the time budget,
+and persisted listings are staged as unreviewed candidates.
 """
 
 import logging
@@ -31,17 +34,22 @@ from app.discovery import registry
 from app.discovery.contracts import (
     CONTRACT_VERSION,
     STORE_OPERATION,
+    AdapterResponseTooLarge,
     AdapterTransientError,
+    AdapterUpstreamError,
     Operation,
     SourceAdapter,
     SourceCandidate,
     SourceObservation,
     SourceQuery,
 )
+from app.discovery.staging import stage_candidate
 
 logger = logging.getLogger("app.discovery")
 
 SYNTHETIC_LABEL = "SYNTHETIC FIXTURE DATA: fictional records, not real Lahore businesses or leads"
+LIVE_LABEL = "UNVERIFIED LISTINGS: third-party records, not verified schools, prospects or contacts"
+COMPLETENESS_NOTE = "Bounded run: at most 30 listings from one configured query; never an exhaustive list."
 
 
 @dataclass(frozen=True)
@@ -67,7 +75,7 @@ class DiscoveryBudget:
 
 StopReason = Literal[
     "completed", "candidate_cap", "page_cap", "fetch_cap", "time_cap", "cost_cap", "rate_limited", "timeout",
-    "cursor_cycle", "provider_quota",
+    "cursor_cycle", "provider_quota", "unavailable", "response_too_large", "upstream_error", "policy_revoked",
 ]  # fmt: skip
 
 
@@ -87,12 +95,22 @@ class CandidatePreview(BaseModel):
     claim_hints: list[str]  # derived/full rights only; untrusted text, displayed as data
     excerpt: str | None  # full rights only
     source_record_id: str | None
+    name_local: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    location_precision: str | None = None  # 'area_center' is a representative point, not an address
+    upstream_timestamp: datetime | None = None
+    attribution: str | None = None
 
 
 class DiscoveryFixtureReport(BaseModel):
+    """Run report for any provider (name kept from P2.1 for compatibility)."""
+
     run_id: str
     correlation_id: str | None
     label: str = SYNTHETIC_LABEL
+    completeness_note: str = COMPLETENESS_NOTE
+    attribution: str | None = None
     contract_version: str = CONTRACT_VERSION
     provider: str
     adapter_version: str
@@ -108,6 +126,11 @@ class DiscoveryFixtureReport(BaseModel):
     budget_consumed: dict[str, float]
     rejection_reasons: dict[str, int]
     candidates: list[CandidatePreview]
+    truncated: bool = False  # the provider had more matches than this bounded run took
+    partial: bool = False  # stopped early by a budget, error or policy change
+    staged_new_count: int = 0
+    staged_revised_count: int = 0
+    staged_unchanged_count: int = 0
 
 
 @dataclass
@@ -115,6 +138,9 @@ class _Run:
     budget: DiscoveryBudget
     started: float
     monotonic: Callable[[], float]
+    environment: str
+    clock: Clock
+    sleep: Callable[[float], None]
     pages: int = 0
     fetches: int = 0
     cost: int = 0
@@ -122,12 +148,23 @@ class _Run:
     examined: int = 0
     rejected: Counter[str] = field(default_factory=Counter)
     stop: StopReason | None = None
+    truncated: bool = False
 
     def elapsed(self) -> float:
         return self.monotonic() - self.started
 
     def out_of_time(self) -> bool:
         return self.elapsed() >= self.budget.max_seconds
+
+    def still_permitted(self, adapter: SourceAdapter) -> bool:
+        """Re-check policy before each adapter call; a provider disabled mid-run halts new calls."""
+        try:
+            registry.check_descriptor(adapter.descriptor, self.environment, now=self.clock.now())
+        except registry.SourcePolicyError as exc:
+            self.rejected[f"policy_{exc.reason}"] += 1
+            self.stop = "policy_revoked"
+            return False
+        return True
 
 
 def _validate_query(descriptor: Any, query: SourceQuery) -> None:
@@ -146,6 +183,17 @@ def _screen(descriptor: Any, url: str | None) -> str | None:
     if host not in descriptor.allowed_hostnames:
         raise ValueError("unapproved_host")
     return url
+
+
+def _clean(candidate: SourceCandidate) -> SourceCandidate:
+    """Untrusted text stays data: NFKC, trimmed, no control/bidi-override characters."""
+    return candidate.model_copy(
+        update={
+            "display_name": policy.clean_text(candidate.display_name, "display_name", 250),
+            "name_local": policy.clean_text(candidate.name_local, "name_local", 250) if candidate.name_local else None,
+            "locality": policy.clean_text(candidate.locality, "locality", 160) if candidate.locality else None,
+        }
+    )
 
 
 def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[SourceCandidate]:
@@ -173,6 +221,8 @@ def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[Sourc
             run.stop = "candidate_cap"
             break
         limit = min(descriptor.page_size, remaining)
+        if not run.still_permitted(adapter):
+            break
         run.pages += 1
         try:
             raw = adapter.search(query=query, limit=limit, cursor=cursor)
@@ -181,14 +231,31 @@ def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[Sourc
             if run.retries >= run.budget.max_retries:
                 run.stop = exc.reason  # type: ignore[assignment]
                 break
+            wait = max(exc.retry_after or 0.0, descriptor.retry_backoff_seconds * (2**run.retries))
+            if run.elapsed() + wait >= run.budget.max_seconds:
+                run.rejected["retry_wait_exceeds_time_budget"] += 1  # honour Retry-After: stop, never hammer
+                run.stop = exc.reason  # type: ignore[assignment]
+                break
             run.retries += 1  # a retry consumes a page call from the same budget
+            if wait > 0:
+                run.sleep(wait)
             continue
+        except AdapterResponseTooLarge:
+            run.rejected["response_too_large"] += 1
+            run.stop = "response_too_large"
+            break
+        except AdapterUpstreamError as exc:
+            run.rejected[f"upstream_{exc}"[:60]] += 1
+            run.stop = "upstream_error"
+            break
         if not isinstance(raw, dict) or not isinstance(raw.get("candidates"), list):
             run.rejected["malformed_page"] += 1
             run.stop = "completed"
             break
         run.cost += int(raw.get("reported_cost_units") or 0) if isinstance(raw.get("reported_cost_units"), int) else 1
         records = raw["candidates"]
+        if raw.get("truncated") is True:
+            run.truncated = True
         if len(records) > limit:  # contract violation: truncate deterministically and count it
             run.rejected["page_oversized"] += len(records) - limit
             records = records[:limit]
@@ -198,6 +265,11 @@ def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[Sourc
                 candidate = SourceCandidate.model_validate(record)
             except ValidationError:
                 run.rejected["invalid_record"] += 1
+                continue
+            try:
+                candidate = _clean(candidate)
+            except policy.PolicyViolation:
+                run.rejected["unsafe_text"] += 1
                 continue
             if candidate.external_key is None:
                 run.rejected["missing_key"] += 1
@@ -242,11 +314,14 @@ def _observe(
 ) -> tuple[SourceObservation | None, str | None]:
     """Returns (observation, None) or (None, rejection_code)."""
     descriptor = adapter.descriptor
-    if run.fetches >= run.budget.max_fetches:
+    remote = not descriptor.fetch_from_search_capture  # captured observations cost no remote call
+    if remote and run.fetches >= run.budget.max_fetches:
         return None, "fetch_budget_exhausted"
     if run.out_of_time():
         return None, "time_budget_exhausted"
-    run.fetches += 1
+    if not run.still_permitted(adapter):
+        return None, "policy_revoked"
+    run.fetches += int(remote)
     try:
         raw = adapter.fetch(source_key=str(candidate.external_key))
         observation = SourceObservation.model_validate(raw)
@@ -289,6 +364,12 @@ def _preview(
         claim_hints=list(candidate.claim_hints) if storage in ("derived_only", "full_allowed") else [],
         excerpt=excerpt[:1000] if isinstance(excerpt, str) else None,
         source_record_id=record_id,
+        name_local=candidate.name_local,
+        latitude=candidate.latitude,
+        longitude=candidate.longitude,
+        location_precision=candidate.location_precision,
+        upstream_timestamp=candidate.upstream_timestamp,
+        attribution=candidate.attribution,
     )
 
 
@@ -303,23 +384,33 @@ def run_discovery(
     budget: DiscoveryBudget | None = None,
     persist: bool = True,
     monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> DiscoveryFixtureReport:
     source_service._require(actor, Capability.MUTATE)
     descriptor = adapter.descriptor
-    registry.check_descriptor(descriptor, environment)  # before any adapter call
-    registry.require_operation(descriptor, Operation.SEARCH)
-    registry.require_operation(descriptor, Operation.FETCH)
-    _validate_query(descriptor, query)
+    try:  # all before any adapter call
+        registry.check_descriptor(descriptor, environment, now=clock.now())
+        registry.require_operation(descriptor, Operation.SEARCH)
+        registry.require_operation(descriptor, Operation.FETCH)
+        _validate_query(descriptor, query)
+    except registry.SourcePolicyError as exc:
+        _record_refusal(db, actor, clock, descriptor.provider, exc.reason, persist)
+        raise
 
     budget = budget or DiscoveryBudget()
-    run = _Run(budget=budget, started=monotonic(), monotonic=monotonic)
+    run = _Run(budget=budget, started=monotonic(), monotonic=monotonic, environment=environment, clock=clock,
+               sleep=sleep)  # fmt: skip
     run_id = str(uuid.uuid4())
     now = clock.now()
     candidates = _search(adapter, query, run)
 
     previews: list[CandidatePreview] = []
     persisted = already = 0
+    staged: Counter[str] = Counter()
     for candidate in candidates:
+        if run.stop == "policy_revoked":
+            run.rejected["policy_revoked"] += 1  # halted: nothing further is stored after revocation
+            continue
         observation, rejection = _observe(adapter, candidate, run, now)
         if observation is None:
             run.rejected[rejection or "rejected"] += 1
@@ -366,12 +457,26 @@ def run_discovery(
                 except AppError:
                     run.rejected["provenance_refused"] += 1
                     continue
+            staged[
+                stage_candidate(
+                    db,
+                    actor=actor,
+                    clock=clock,
+                    candidate=candidate,
+                    rights_policy_version=observation.rights_policy_version,
+                    expires_at=expires_at,
+                    source_record_id=uuid.UUID(record_id),
+                )
+            ] += 1
         previews.append(_preview(candidate, observation, expires_at, record_id))
 
     run.stop = run.stop or "completed"
+    fixture = descriptor.source_kind == "fixture"
     report = DiscoveryFixtureReport(
         run_id=run_id,
         correlation_id=current_request_id(),
+        label=SYNTHETIC_LABEL if fixture else LIVE_LABEL,
+        attribution=descriptor.attribution,
         provider=descriptor.provider,
         adapter_version=descriptor.adapter_version,
         rights_policy_version=str(descriptor.rights_policy_version),
@@ -392,21 +497,31 @@ def run_discovery(
         },
         rejection_reasons=dict(sorted(run.rejected.items())),
         candidates=previews,
+        truncated=run.truncated or run.stop == "candidate_cap",
+        partial=run.stop not in ("completed", "candidate_cap"),
+        staged_new_count=staged["new"],
+        staged_revised_count=staged["revised"],
+        staged_unchanged_count=staged["unchanged"],
     )
     if persist:
         management._audit(
             db,
             actor,
             clock,
-            "discovery.fixture_run",
+            "discovery.fixture_run" if fixture else "discovery.source_run",
             uuid.UUID(run_id),
             {
                 "provider": descriptor.provider,
+                "rights_policy_version": report.rights_policy_version,
                 "stop_reason": report.stop_reason,
+                "truncated": report.truncated,
                 "accepted": report.accepted_count,
                 "rejected": report.rejected_count,
                 "persisted": persisted,
                 "already_recorded": already,
+                "staged_new": report.staged_new_count,
+                "staged_revised": report.staged_revised_count,
+                "budget_consumed": report.budget_consumed,
             },
             target_type="discovery_run",
         )
@@ -422,3 +537,19 @@ def run_discovery(
         },
     )
     return report
+
+
+def _record_refusal(db: Session, actor: Actor, clock: Clock, provider: str, reason: str, persist: bool) -> None:
+    """Typed denied event: a log line always, and an audit row when the run would have persisted."""
+    logger.warning("discovery.source_denied", extra={"context": {"reason": reason}})
+    if persist:
+        management._audit(
+            db,
+            actor,
+            clock,
+            "discovery.run_refused",
+            uuid.uuid4(),
+            {"provider": provider, "reason": reason},
+            target_type="discovery_run",
+        )
+        db.commit()

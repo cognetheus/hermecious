@@ -5,6 +5,7 @@ missing or invalid value stops startup. Errors name the offending settings but
 never echo their values, and the settings repr masks every URL.
 """
 
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -34,6 +35,18 @@ class Settings(BaseSettings):
     allowed_origins_raw: str = Field(validation_alias="HERMECIOUS_ALLOWED_ORIGINS")
     session_cookie_secure: bool = Field(default=False, validation_alias="HERMECIOUS_SESSION_COOKIE_SECURE")
     session_idle_minutes: int = Field(default=480, ge=5, le=1440, validation_alias="HERMECIOUS_SESSION_IDLE_MINUTES")
+    # P2.2 live source (ADR-013): disabled unless the owner completes the rights review fields.
+    osm_enabled: bool = Field(default=False, validation_alias="HERMECIOUS_OSM_ENABLED")
+    osm_endpoint: str = Field(
+        default="https://overpass-api.de/api/interpreter", validation_alias="HERMECIOUS_OSM_ENDPOINT"
+    )
+    osm_rights_reviewed_by: str | None = Field(
+        default=None, max_length=120, validation_alias="HERMECIOUS_OSM_REVIEWED_BY"
+    )
+    osm_rights_reviewed_at: datetime | None = Field(default=None, validation_alias="HERMECIOUS_OSM_REVIEWED_AT")
+    # "south,west,north,east" chosen and cited by the operator; never derived from a place name.
+    osm_bbox: str | None = Field(default=None, validation_alias="HERMECIOUS_OSM_BBOX")
+    osm_bbox_citation: str | None = Field(default=None, max_length=300, validation_alias="HERMECIOUS_OSM_BBOX_CITATION")
     # Optional wake-up notification for workers; "none" leaves only DB polling (ADR-011).
     job_notify: Literal["redis", "none"] = Field(default="redis", validation_alias="HERMECIOUS_JOB_NOTIFY")
     session_absolute_minutes: int = Field(
@@ -56,6 +69,21 @@ class Settings(BaseSettings):
             raise ValueError("HERMECIOUS_ALLOWED_ORIGINS")
         if self.session_idle_minutes > self.session_absolute_minutes:
             raise ValueError("HERMECIOUS_SESSION_IDLE_MINUTES")
+        if self.osm_enabled:
+            from app.discovery.area import OVERPASS_ENDPOINTS, BBoxError, parse_bbox  # noqa: PLC0415
+
+            if self.osm_endpoint not in OVERPASS_ENDPOINTS:
+                raise ValueError("HERMECIOUS_OSM_ENDPOINT")
+            if not self.osm_rights_reviewed_by or self.osm_rights_reviewed_at is None:
+                raise ValueError("HERMECIOUS_OSM_REVIEWED_BY")
+            if self.osm_rights_reviewed_at.tzinfo is None:
+                raise ValueError("HERMECIOUS_OSM_REVIEWED_AT")
+            if not self.osm_bbox_citation:
+                raise ValueError("HERMECIOUS_OSM_BBOX_CITATION")
+            try:
+                parse_bbox(self.osm_bbox or "")
+            except BBoxError:
+                raise ValueError("HERMECIOUS_OSM_BBOX") from None
         if self.environment == "production":
             if self.log_level == "DEBUG":
                 raise ValueError("HERMECIOUS_LOG_LEVEL")

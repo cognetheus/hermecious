@@ -16,7 +16,8 @@ CONTRACT_VERSION = "source-adapter-v1"
 
 ShortText = Annotated[str, Field(min_length=1, max_length=250)]
 Keyword = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[\w .'-]+$")]
-SourceKey = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")]
+# "/" allowed for typed upstream ids such as OSM "node/123" (P2.2); still never a URL.
+SourceKey = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
 StorageClassName = Literal["metadata_only", "derived_only", "full_allowed"]
 
 
@@ -57,6 +58,14 @@ class SourceCandidate(_Strict):
     observed_at: AwareDatetime
     # Unverified hints only: never facts, never instructions.
     claim_hints: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=5)
+    # P2.2 optional listing fields (backward compatible; absent for the P2.1 fixture).
+    name_local: Annotated[str, Field(max_length=250)] | None = None
+    latitude: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    longitude: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    # 'area_center' = representative point of a way/relation, not a verified address.
+    location_precision: Literal["point", "area_center"] | None = None
+    upstream_timestamp: AwareDatetime | None = None
+    attribution: Annotated[str, Field(max_length=300)] | None = None
 
 
 class SourceObservation(_Strict):
@@ -98,6 +107,17 @@ class SourceDescriptor(_Strict):
     last_reviewed_at: datetime | None
     supported_cities: frozenset[str]
     supported_verticals: frozenset[str]
+    # P2.2 additions (defaults keep P2.1 descriptors valid).
+    reviewed_by: Annotated[str, Field(max_length=120)] | None = None
+    review_valid_days: Annotated[int, Field(ge=1, le=730)] = 365
+    licence_reference: Annotated[str, Field(max_length=300)] | None = None
+    attribution: Annotated[str, Field(max_length=300)] | None = None
+    max_response_bytes: Annotated[int, Field(ge=1024, le=2_000_000)] = 2_000_000
+    # Minimum wait before retrying a transient failure (doubled per retry; Retry-After wins if longer).
+    retry_backoff_seconds: Annotated[float, Field(ge=0, le=60)] = 0.0
+    # True when fetch() serves the observation captured by this run's search (no extra remote call),
+    # so it does not consume the remote fetch budget.
+    fetch_from_search_capture: bool = False
 
 
 class SourceAdapter(Protocol):
@@ -117,9 +137,13 @@ class SourceAdapter(Protocol):
 
 
 class AdapterTransientError(Exception):
-    """Retryable within budget (rate limit, timeout)."""
+    """Retryable within budget (rate limit, timeout, temporarily unavailable)."""
 
     reason = "transient"
+
+    def __init__(self, retry_after: float | None = None) -> None:
+        super().__init__(self.reason)
+        self.retry_after = retry_after
 
 
 class AdapterRateLimited(AdapterTransientError):
@@ -128,3 +152,15 @@ class AdapterRateLimited(AdapterTransientError):
 
 class AdapterTimeout(AdapterTransientError):
     reason = "timeout"
+
+
+class AdapterUnavailable(AdapterTransientError):
+    reason = "unavailable"
+
+
+class AdapterResponseTooLarge(Exception):
+    """The provider response exceeded the byte ceiling; never parsed."""
+
+
+class AdapterUpstreamError(Exception):
+    """Permanent provider error (bad request, forbidden, malformed body); not retried."""

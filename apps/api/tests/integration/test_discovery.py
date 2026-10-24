@@ -386,12 +386,22 @@ def test_unsafe_urls_and_prompt_injection_are_inert_data(app: FastAPI, no_egress
 
 
 def test_discovery_package_has_no_network_client_imports() -> None:
+    """P2.2: the only egress is app.egress, and only the reviewed OSM adapter (and its CLI wiring) may use it."""
     package = API_ROOT / "app" / "discovery"
-    forbidden = ("import socket", "import httpx", "import requests", "import urllib.request", "import aiohttp")
+    forbidden = ("import socket", "import ssl", "http.client", "import httpx", "import requests", "urllib.request",
+                 "import aiohttp")  # fmt: skip
     offenders = [
         f"{path.name}: {needle}" for path in package.rglob("*.py") for needle in forbidden if needle in path.read_text()
     ]
     assert offenders == []
+    egress_users = sorted(p.name for p in package.rglob("*.py") if "app.egress" in p.read_text())
+    assert egress_users == ["cli.py", "osm.py"]
+    network_modules = sorted(
+        str(p.relative_to(API_ROOT))
+        for p in (API_ROOT / "app").rglob("*.py")
+        if any(n in p.read_text() for n in ("http.client", "import ssl", "urllib.request", "import httpx"))
+    )
+    assert network_modules == ["app/egress/https_client.py"]
 
 
 # --- SOURCE-09 ---------------------------------------------------------------------------------------------

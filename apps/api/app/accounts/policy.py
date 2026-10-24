@@ -55,6 +55,8 @@ PROVIDERS: dict[str, ProviderPolicy] = {
     "fixture": ProviderPolicy(ALL_CLASSES, allow_payload=True),
     # P2.1 synthetic discovery fixture: provenance only (no payloads), stable provider-scoped keys.
     "fixture_lahore_schools": ProviderPolicy(ALL_CLASSES, requires_external_key=True),
+    # P2.2 OpenStreetMap via Overpass (ODbL, ADR-013): identity metadata only, keyed by element type/id.
+    "osm_overpass_schools": ProviderPolicy(frozenset({StorageClass.METADATA_ONLY}), requires_external_key=True),
 }
 
 _BLOCKED_HOSTS = {"localhost", "metadata.google.internal", "metadata", "instance-data"}

@@ -55,14 +55,24 @@ def resolve(provider: str, environment: str) -> SourceDescriptor:
     return descriptor
 
 
-def check_descriptor(descriptor: SourceDescriptor, environment: str) -> None:
+# Website crawling stays refused; live kinds need a named, unexpired rights review (P2.2, ADR-013).
+ENABLED_KINDS = frozenset({"fixture", "api", "seed_list"})
+
+
+def check_descriptor(descriptor: SourceDescriptor, environment: str, now: datetime | None = None) -> None:
     """Fail closed unless the descriptor is enabled, reviewed and allowed here."""
     if not descriptor.enabled:
         raise SourcePolicyError("provider_disabled")
     if not descriptor.terms_reference or not descriptor.rights_policy_version or descriptor.last_reviewed_at is None:
         raise SourcePolicyError("provider_unreviewed")
+    if descriptor.source_kind not in ENABLED_KINDS:
+        raise SourcePolicyError("live_sources_not_enabled")
     if descriptor.source_kind != "fixture":
-        raise SourcePolicyError("live_sources_not_enabled")  # P2.1 is offline-only
+        if not descriptor.reviewed_by:
+            raise SourcePolicyError("provider_unreviewed")
+        age = (now or datetime.now(UTC)) - descriptor.last_reviewed_at
+        if age > timedelta(days=descriptor.review_valid_days):
+            raise SourcePolicyError("rights_review_expired")
     if environment not in descriptor.environments:
         raise SourcePolicyError("provider_not_enabled_in_environment")
     if descriptor.requires_credentials:
