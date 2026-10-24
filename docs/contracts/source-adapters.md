@@ -1,8 +1,23 @@
-# Source adapter contract (P2.1)
+# Source adapter contract (P2.1, extended in P2.2)
 
-Rights-aware, bounded discovery over registered source adapters. In P2.1 this means **offline synthetic data only**. Decision record: [ADR-012](../adr/ADR-012-source-adapter-fetch-by-key.md). Code: `apps/api/app/discovery/`.
+Rights-aware, bounded discovery over registered source adapters. Decision records: [ADR-012](../adr/ADR-012-source-adapter-fetch-by-key.md) (fetch by key) and [ADR-013](../adr/ADR-013-osm-overpass-source-and-egress.md) (first live source and egress). Code: `apps/api/app/discovery/` and `apps/api/app/egress/`. Operating procedure: [discovery-sources runbook](../runbooks/discovery-sources.md).
 
-> A fixture proves nothing about any real school. Every report is labelled `SYNTHETIC FIXTURE DATA: fictional records, not real Lahore businesses or leads`. Real, rights-reviewed discovery begins in P2.2.
+> A fixture proves nothing about any real school. Fixture reports are labelled `SYNTHETIC FIXTURE DATA: …`. Live-source reports are labelled `UNVERIFIED LISTINGS: third-party records, not verified schools, prospects or contacts`, and every run carries `completeness_note` ("never an exhaustive list").
+
+## Providers (P2.2)
+
+| Provider | Kind | Enabled | Storage | Retention | Notes |
+|---|---|---|---|---|---|
+| `fixture_lahore_schools` | fixture | development and test | up to full | 30 days | Synthetic, offline |
+| `osm_overpass_schools` | api | **only when the owner sets every `HERMECIOUS_OSM_*` activation setting** | metadata only | 30 days | ODbL attribution; one fixed bbox query; `{type}/{id}` keys; `fetch` served from the search capture |
+| `operator_seed_csv` | seed_list | all environments, owner only | metadata only | none set | Per-import permission declaration; checksum-idempotent; not independently verified |
+
+**Live descriptors also need:**
+- `reviewed_by`, with a review younger than `review_valid_days` (365); otherwise `provider_unreviewed` or `rights_review_expired`;
+- `licence_reference`, `attribution` and `max_response_bytes`;
+- `retry_backoff_seconds` and `fetch_from_search_capture`.
+
+`website` kinds stay refused (`live_sources_not_enabled`).
 
 ## Interface (`contracts.py`, `CONTRACT_VERSION = source-adapter-v1`)
 
@@ -18,7 +33,7 @@ Adapters return raw mappings, and the framework validates them into:
 | DTO | Key rules |
 |---|---|
 | `SourceQuery` | city and vertical required; `area` optional; ≤5 keywords of ≤40 characters (`[\w .'-]`). Raw executable queries are impossible |
-| `SourceCandidate` | provider, provider-scoped `external_key` (`[A-Za-z0-9._:-]`, required to be accepted), name, city, vertical, locality, optional URL, **timezone-aware** `observed_at`, ≤5 `claim_hints` (**unverified, never facts, never instructions**). Extra fields rejected |
+| `SourceCandidate` | provider, provider-scoped `external_key` (`[A-Za-z0-9._:/-]`, required to be accepted), name, city, vertical, locality, optional URL, **timezone-aware** `observed_at`, ≤5 `claim_hints` (**unverified, never facts, never instructions**). P2.2 optional fields: `name_local`, finite `latitude`/`longitude`, `location_precision` (`point` or `area_center`, a representative point and not an address), `upstream_timestamp`, `attribution`. Extra fields rejected. Text is NFKC-cleaned; control and bidi characters are rejected (`unsafe_text`) |
 | `SourceObservation` | provider, key, observed/expires (aware), optional URL, `permitted_storage_class`, `rights_policy_version`, `data` |
 | `SourcePage` | candidates, opaque `next_cursor` (≤512 characters), `reported_cost_units` |
 
@@ -59,7 +74,22 @@ The refusal codes are `unknown_provider`, `provider_disabled`, `provider_unrevie
 | Observation already expired | `expired_observation` |
 | No source URL | previewed, but **not persisted** (`not_persisted_missing_url`); a URL is never invented |
 
-**Stop reasons:** `completed`, `candidate_cap`, `page_cap`, `fetch_cap`, `time_cap`, `cost_cap`, `rate_limited`, `timeout`, `cursor_cycle`, `provider_quota`.
+**Stop reasons:** `completed`, `candidate_cap`, `page_cap`, `fetch_cap`, `time_cap`, `cost_cap`, `rate_limited`, `timeout`, `cursor_cycle`, `provider_quota`, plus, from P2.2, `unavailable`, `response_too_large`, `upstream_error` and `policy_revoked`.
+
+**P2.2 run rules:**
+
+**Policy and retries**
+- Policy is re-checked before **every** adapter call; a provider disabled mid-run stops the run, and nothing more is stored.
+- Transient errors wait `max(Retry-After, retry_backoff_seconds × 2^retry)`, and only if the wait fits the time budget (otherwise `retry_wait_exceeds_time_budget`).
+- Oversized responses and permanent upstream errors stop without retry.
+
+**Report fields**
+- `truncated`: the provider had more matches than the run took.
+- `partial`: the run was stopped early by a budget, error or policy change.
+
+**Refusals and staging**
+- A refusal writes a `discovery.source_denied` log line and a `discovery.run_refused` audit.
+- Persisted candidates are **staged** in `discovery_candidates` (below).
 
 **Retained content by rights:**
 
@@ -75,13 +105,42 @@ Raw provider text (for example `raw_page_text`) and free-form `notes` are never 
 
 **Report** (`DiscoveryFixtureReport`) contains `run_id`, `correlation_id`, the synthetic label, contract and adapter versions, the rights policy version, the query, `stop_reason`, examined, accepted, rejected, persisted and already-recorded counts, budget limits and consumption, rejection reason counts, and rights-filtered `unverified` previews. An audit row `discovery.fixture_run` (`target_type = discovery_run`) stores the counts.
 
-## Running it (development and test only)
+## Staging (P2.2, migration 0007)
+
+**`discovery_candidates`**
+- **Identity:** one row per `(organization_id, provider, external_key)`.
+- **Status:** `unreviewed` / `admitted` / `rejected`; only `unreviewed` is written in P2.2.
+- **Fields:** the permitted listing fields, `rights_policy_version`, `attribution`, `observed_at`, `upstream_timestamp`, `expires_at`, `revision` and `payload_digest`.
+- **Provenance:** an organization-scoped FK to `source_records` and/or `source_imports`; at least one is required.
+- **Replays and revisions:**
+  - An identical replay is a no-op.
+  - A content change bumps `revision` and writes a `discovery.candidate_revised` audit.
+  - Concurrent replays are safe.
+
+**`source_imports`**
+- One row per CSV file per organization (`file_sha256` unique).
+- Holds the label, declaration, counts and importer.
+
+## HTTP (P2.2)
+
+| Route | Access | Behaviour |
+|---|---|---|
+| `POST /api/v1/discovery/seed-imports` | owner, CSRF | `{source_label, permission_declaration (20–1000), csv_text}`. 201, or 200 with `replayed: true` for identical bytes. 400 `VALIDATION_ERROR` for header, size, rows or encoding problems. Rejected rows are reported by row number only |
+| `GET /api/v1/discovery/candidates` | any role | Organization-scoped; `limit` ≤50; `provider` and `status` filters; keyset `cursor`. Each item has `verification: unverified`, `origin`, `attribution`, `expires_at`, `expired` and `source_url` (the provenance URL, if any) |
+
+There is **no HTTP route that starts a live run or accepts a URL**.
+
+## Running it
 
 ```sh
+# Synthetic fixture (development/test only)
 docker compose run --rm --no-deps api python -m app.discovery.cli --organization <org-uuid> [--keyword K] [--dry-run]
+# Live OSM (owner opt-in; see the runbook for the activation settings)
+docker compose run --rm --no-deps -e HERMECIOUS_OSM_ENABLED=true -e … api \
+  python -m app.discovery.cli --organization <org-uuid> --provider osm_overpass_schools --confirm-live
 ```
 
-It refuses outside `development`/`test`. There is **no HTTP endpoint** in P2.1, and P2.4 owns the review UI.
+The fixture refuses outside `development`/`test`. The live provider refuses without `--confirm-live` or with an incomplete review. P2.4 owns run management and the review UI.
 
 ## Fixture dataset
 
@@ -95,6 +154,29 @@ It refuses outside `development`/`test`. There is **no HTTP endpoint** in P2.1, 
   - a prompt-injection string, which stays inert data.
 - **Hosts** use `school.fixture.example`, which is non-fetchable and never contacted.
 
-## Extending in P2.2
+## Egress (P2.2)
 
-Add a descriptor with a real rights review, implement the adapter, and register its provider in the P1.2 `PROVIDERS` rights policy. Relax `live_sources_not_enabled` **for that reviewed provider only**. Implement a network client bound to `allowed_hostnames`, with post-DNS private-address and redirect checks (ADR-012). Keep every rule above.
+`app/egress/https_client.py` (`PinnedHttpsClient`) is the **only** network client.
+
+**Targets and DNS**
+- It reaches only an exact `(host, path)` allowlist, over HTTPS on port 443.
+- **Every** DNS answer must be globally routable; the connection is pinned to the vetted IP, and TLS verifies the hostname.
+
+**Requests and responses**
+- No redirects, proxies, cookies or credentials.
+- Bounded time and bytes.
+- 429/503 responses become typed transient errors carrying a bounded Retry-After.
+
+**Who may use it**
+- Within `app/discovery`, only `osm.py` and `cli.py` may import it (static test).
+- Every discovery test runs under a socket egress guard.
+
+## Adding another provider
+
+1. Write an ADR with the rights review.
+2. Add a descriptor with `reviewed_by`, licence, attribution and limits.
+3. Add a P1.2 `PROVIDERS` entry.
+4. Add an egress allowlist entry, if it is network-backed.
+5. Add hermetic tests.
+
+Keep every rule above.

@@ -915,3 +915,142 @@ Disable the fixture with `enabled=False` in its descriptor (fail closed), or rev
 ### VERDICT: VERIFIED
 
 Batch 03 is complete. P2.2 is next (Batch 04).
+
+## P2.2 — First real, rights-aware Lahore school discovery input (2026-10-24)
+
+**Scope:** Batch 04 §P2.2 and `OPUS_P2.2_PROMPT.md`. **Base:** `5d8480f`. **Head:** `18834d9` (code), plus the docs and ledger commit. **Migration:** `0007_discovery_staging` (`source_imports`, `discovery_candidates`); the dev database is upgraded to `0007 (head)`.
+
+### Preflight
+
+- **Prerequisites:** P2.1 is VERIFIED (SOURCE-01…10), and P0/P1 ledger proof exists. The P0.3 remote-CI observation gap is carried forward.
+- **Baseline at `5d8480f`:** check.sh 16/16 PASS, with 241 integration tests and 122 unit + contract tests.
+- **Reused:**
+  - P2.1 DTOs, descriptor registry, runner and budgets (extended backward-compatibly, ADR-013 §5);
+  - P1.2 `PROVIDERS`, `screen_url`, `clean_text` and `add_source_record`;
+  - P1.4 `_audit`.
+- **No equivalent staging table existed**, so `discovery_candidates` was added as Batch 04 specifies.
+- **This prompt was not treated as permission to make network requests.**
+
+### Design decisions (ADR-013)
+
+1. **`osm_overpass_schools`** (`api`, `osm-odbl-2026-10`, metadata only, 30-day TTL, quota 3, ≤30 results).
+   - **Off by default.** It is enabled only when the owner sets the enabled flag, reviewer, timezone-aware review time, bounding box (≤0.6° per side, Pakistan sanity envelope) and box citation.
+   - **Validation:** settings validation names any incomplete activation; a review older than 365 days gives `rights_review_expired`.
+   - **Endpoint:** from a code allowlist only.
+2. **One fixed Overpass QL template** with validated numbers. It requests 31 to detect truncation, and never sweeps a grid or uses a cursor.
+   - **Elements:** node/way/relation with a positive integer id; key `{type}/{id}`; the provenance URL is built from the key.
+   - **Tags kept:** `name`, `name:ur`, `addr:suburb` only.
+   - **Location:** `center` is labelled `area_center`. Elements outside the box or without geometry are rejected.
+   - **Never synthesized:** a missing name. **Never kept:** contributor metadata.
+   - **`fetch`:** served from the same search capture, with no second request.
+3. **`PinnedHttpsClient`** is the only network module.
+   - Exact host and path; HTTPS on 443; every DNS answer must be global; the TCP connection is pinned to the vetted IP, with TLS SNI verification.
+   - No redirects, proxies, cookies or credentials; 25 s timeout; 1 MB cap.
+   - 429/503 become typed transients; Retry-After is accepted only as numeric seconds ≤300.
+4. **Runner:**
+   - policy is re-checked before every adapter call (`policy_revoked`);
+   - waits are `max(Retry-After, 5 s × 2^n)` and must fit the time budget;
+   - new stops: `response_too_large`, `upstream_error`, `unavailable`;
+   - new report fields: `truncated`, `partial`, `completeness_note`, attribution and staged counts;
+   - refusals leave a `discovery.source_denied` log line and a `discovery.run_refused` audit;
+   - names are screened for control and bidi characters (`unsafe_text`).
+5. **Staging:** idempotent on `(org, provider, external_key)`.
+   - An identical replay is a no-op.
+   - A change bumps `revision` and writes a `discovery.candidate_revised` audit with both digests.
+   - Concurrency is handled with `ON CONFLICT` and a row lock.
+   - **No accounts, facts or contacts are created.**
+6. **CSV fallback `operator_seed_csv`** (owner only, CSRF): see ADR-013 §7 for the full rules.
+   - **Required inputs:** a source label and a permission declaration.
+   - **File:** UTF-8 with an optional BOM; ≤256 KB; ≤500 rows; strict header; Lahore only.
+   - **Row rejections:** formula-like or control-character cells. Rejected rows are reported by number only.
+   - **Idempotency:** on the checksum.
+   - **No network use:** nothing is fetched.
+7. **Read API** `GET /api/v1/discovery/candidates` (bounded, keyset). Every item says `unverified` and carries origin, attribution, TTL and `expired`. **There is no endpoint that starts a live run.**
+
+### Acceptance evidence
+
+All of LIVE-01…09 are hermetic: Overpass is replaced by a stub, Postgres is real, and every discovery test runs under a socket egress guard that saw 0 attempts.
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| LIVE-01 | `test_live_01_unpermitted_source_is_denied_before_any_request` (8 cases: disabled, unreviewed ×2, review incomplete, expired, wrong environment, fetch not licensed, website kind), `test_live_01_review_expiry_follows_the_clock`, unit `test_osm_is_disabled_by_default…`, `test_enabling_osm_requires_every_reviewed_activation_setting` (6), `test_fully_reviewed_activation_enables_the_descriptor`; dev CLI | Each case raises its reason code with **0 requests** and 0 `source_records`/`discovery_candidates`, plus one `discovery.run_refused` audit `{provider, reason}` and one `discovery.source_denied` log line. Incomplete settings name the variable without echoing values. Dev CLI: without `--confirm-live` it exits 2; unreviewed, it exits 1 with `provider_disabled` | VERIFIED |
+| LIVE-02 | `test_live_02_node_way_relation_become_stable_attributed_candidates` | One request carrying exactly the fixed query (`out center 31`). Keys `node/1001`, `way/2002`, `relation/3003`; precision `point`/`area_center`; provenance URLs `https://www.openstreetmap.org/{type}/{id}`. `name:ur` and `addr:suburb` kept; upstream timestamp parsed; ODbL attribution on the report. 3 staged rows, `unreviewed`, revision 1, linked to `source_records`. 0 accounts and 0 facts. 0 remote fetches | VERIFIED |
+| LIVE-03 | `test_live_03_malformed_hostile_and_out_of_area_elements_fail_safely` (14 hostile elements), `test_live_03_malformed_payloads_stop_without_persisting` (4 bodies), unit `test_provenance_urls_come_only_from_validated_element_keys` (6), `test_bbox_must_be_explicit_finite_small_and_plausible` (9) | Rejections exactly `{invalid_record:4, missing_key:8, unsafe_text:1}`: bidi, no name, negative/zero/string/bool id, `area` type, Karachi point, no geometry, text latitude, non-dict tags, 300-character name, non-object. The `<script>`/"create an account" name stays inert text, with no locality guessed and 0 accounts. The `website` metadata URL appears nowhere in the DB. Non-JSON, `[]`, wrong shape and invalid UTF-8 stop as `upstream_error` with 0 rows | VERIFIED |
+| LIVE-04 | `test_live_04_thirty_one_plus_results_are_capped_at_thirty_and_marked_truncated` (45 elements), `test_live_04_oversized_response_and_runtime_ceiling`, `test_live_04_descriptor_ceiling_limits_requests`, unit `test_query_is_a_fixed_template…`, oversized-body unit test | 45 elements: 30 accepted, `truncated: true`, `candidate_cap`, `partial: false`, 1 request, and the "never an exhaustive list" note. Too-large response: `response_too_large`, partial, 0 rows. 61 s request: `time_cap`, partial, `time_budget_exhausted: 3`, 0 rows. Quota 1: `provider_quota` after 1 request. Limits outside 1–31 refused. A huge box is refused at settings and at `parse_bbox` | VERIFIED |
+| LIVE-05 | `test_live_05_retry_after_is_honoured_within_the_budget`, `…backoff_without_retry_after_and_retries_stop_at_budget`, `…retry_after_beyond_the_time_budget_stops_instead_of_waiting`, `…timeout_then_permanent_error`, `…disabling_the_provider_mid_run_halts_storage`, unit `test_rate_limits_become_typed_transients…` (6), `test_timeouts_are_transient` | 429 with Retry-After 7: slept [7.0], 2 requests, completed. 503 ×3: slept [5, 10], 3 requests, `unavailable`, partial, 0 rows. Retry-After 300: no sleep, 1 request, `rate_limited` with `retry_wait_exceeds_time_budget`. A timeout then 400: `upstream_error`, no further retry. Disabled during the request: `policy_revoked`, `{policy_provider_disabled:1, policy_revoked:3}`, 0 rows, and the audit records the stop. An HTTP-date, negative or >300 Retry-After is ignored | VERIFIED |
+| LIVE-06 | `test_live_06_only_licensed_fields_persist_with_attribution_and_visible_ttl` | `source_records`: `metadata_only`, `osm-odbl-2026-10`, no payload, URL from the key, expiry = observed + 30 days. A text dump of `source_records`, `discovery_candidates`, `source_imports`, `action_audits` and the report contains none of the injected phone, email, operator or contributor strings. JSON logs contain none of them, nor school names. The API returns `unverified`, `map_listing`, ODbL attribution, `expires_at` and `expired: false` (true after 31 days), with no phone, email, website or operator keys; `no-store` | VERIFIED |
+| LIVE-07 | `test_live_07_identical_replay_is_a_no_op_and_changes_are_audited_revisions`, `test_live_07_csv_checksum_replay_creates_nothing_new`, `test_live_07_concurrent_identical_imports_record_once` (2 threads) | OSM replay with a new upstream base: staged unchanged 3, persisted 0, already 3, 3 rows, 0 revision audits. A renamed node gives revision 2 and exactly one `discovery.candidate_revised` audit; still 3 rows. The same CSV twice gives `replayed`, the same import id, 1 import, 2 candidates and 1 audit. Concurrent identical imports: one not replayed and one replayed, with 1 import row | VERIFIED |
+| LIVE-08 | `test_live_08_whole_file_rejections_persist_nothing` (6: bad header, extra phone column, 501 rows, >256 KB, NUL, unterminated quote), `test_live_08_non_utf8_and_missing_declaration_are_refused`, `test_live_08_bad_rows_are_rejected_individually_without_echoing_content` | Whole-file problems give 400 `VALIDATION_ERROR` with 0 imports and 0 candidates. Latin-1 is refused, and so is a short declaration. In an 11-row file only `good-1` is staged; reasons are exactly `{duplicate_row:1, formula_like:4, invalid_external_key:1, invalid_text:2, wrong_area:1, wrong_column_count:1}`, rows reported as numbers 2–11. `HYPERLINK`, `evil.example`, `calc`, `@SUM` and the Karachi row are absent from DB, audits and response. BOM and Urdu rows are accepted, with `lahore` normalized to `Lahore` | VERIFIED |
+| LIVE-09 | `test_live_09_seed_import_api_is_owner_only_csrf_protected_and_org_scoped`, `…candidate_list_is_bounded_paginated_and_validated`, `…cross_org_replay_stays_isolated`, `…operators_cannot_seed_and_observers_cannot_run`; unit SSRF suite (8 targets, 10 DNS answer sets, 4 redirects, DNS failure, proxy env); `test_discovery_package_has_no_network_client_imports`; **the full P2.1 SOURCE suite unchanged (37 tests)** | Responses: unauthenticated 401; operator 403; no CSRF 403; spoofed `organization_id` or `source_url` field 422; created 201; replay 200; bad header 400. Org B sees 0 of org A's candidates. Pagination 30 + 5 with `limit` 51 → 422 and a bad cursor → 400. Two orgs keep 3 + 3 rows. Service-level operator seed gives `Forbidden`. Egress client: off-allowlist host, path, scheme, port, userinfo, query, fragment or IP gives `target_not_allowed` with 0 connects; loopback, metadata, RFC1918, ULA, CGNAT, `0.0.0.0`, IPv4-mapped loopback or a mixed public+private answer gives `non_public_address` with 0 connects; 3xx gives `redirect_refused`; `HTTPS_PROXY` is ignored (connected to the vetted IP). Network modules in `app/`: only `app/egress/https_client.py`; egress importers in `app/discovery`: only `cli.py` and `osm.py`. SOURCE-01…10 still pass | VERIFIED |
+| LIVE-10 | — | **Not run.** It needs the owner's explicit opt-in (rights review recorded in `HERMECIOUS_OSM_*`, a cited box) and outbound access to `overpass-api.de`. **No live request has been made from this repository, and no real-provider evidence exists.** The Overpass QL is checked only against the documented template | **BLOCKED** (owner opt-in) |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `18834d9` | 0 | 16/16 PASS. Integration **277** passed (241 prior + 36 LIVE); unit + contract **179** (122 + 57); web 2; e2e 9 + 1 after restart |
+| `./scripts/test-integration.sh tests/integration/test_discovery.py tests/integration/test_discovery_live.py tests/unit` | 0 | 216 passed |
+| `./scripts/test-integration.sh … test_migrations.py` (includes upgrade/downgrade and model-drift checks with 0007) | 0 | passed |
+| Dev: `docker compose run --rm --no-deps api python -m alembic upgrade head`, then `alembic current` | 0 | `0006 -> 0007`, then `0007 (head)` |
+| `bash scripts/smoke-local.sh` after the rebuild | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+- **`Result.tuples()` deprecation:** it raised under warnings-as-errors in the candidate list; replaced with row unpacking.
+- **Two test expectations were wrong, not the code:**
+  - The error code is upper-case `VALIDATION_ERROR`.
+  - A 31-day clock jump correctly expires the session, so the test now re-logs in.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| `_is_public` always true | 10 unit failures (DNS answer suite) |
+| No policy re-check before `fetch` | 1 (`…disabling_the_provider_mid_run…`) |
+| Staging ignores the digest (every replay counts as a revision) | 1 (LIVE-07 replay) |
+| Formula-prefix check removed | 1 (LIVE-08 bad rows) |
+| Bounding-box containment check removed | 1 (LIVE-03) |
+| Retry wait skipped | 2 (LIVE-05) |
+| Redirect refusal removed | 4 (redirect cases) |
+| CSV checksum `ON CONFLICT` removed | 3 (replay, concurrency and API replay) |
+
+### Security, privacy and data rights
+
+- **Egress:** one network client, allowlisted and pinned, with no redirects or proxies, plus bounded time and bytes. Nothing in discovery or the API takes a URL to fetch, and no operator or model can supply one.
+- **Data minimisation:**
+  - OSM: identity tags only; no contributor, contact, website or operator data.
+  - CSV: no contact columns accepted; formula cells refused; rejected content never echoed.
+  - Logs carry counts and reason codes only.
+- **Rights:**
+  - Metadata only with a 30-day TTL. ODbL attribution travels on every candidate and report.
+  - The CSV carries the operator's declaration and checksum.
+  - **ODbL share-alike must be re-assessed before any external export.**
+- **Organization scope:** organization-scoped keys, FKs and queries; `organization_id` from clients is rejected.
+- **What staging does not do:** no accounts, facts, contacts, jobs or sends.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/egress/{__init__,https_client}.py` | Pinned HTTPS client |
+| `apps/api/app/discovery/{area,osm,staging,seed_import,models,routes}.py` | Bounding box and endpoint allowlist; OSM adapter; staging; CSV import; models; API |
+| `apps/api/app/discovery/{contracts,registry,runner,cli}.py` | Backward-compatible extensions; review expiry; runner P2.2 rules; live CLI |
+| `apps/api/app/core/settings.py`, `app/api/dependencies.py`, `app/main.py`, `app/accounts/policy.py`, `app/persistence/registry.py` | Activation settings; settings dependency; router; OSM rights entry; model registry |
+| `apps/api/alembic/versions/0007_discovery_staging.py`, `tests/integration/test_migrations.py` | Schema; HEAD now 0007 |
+| `apps/api/tests/integration/test_discovery_live.py` (36), `tests/unit/test_egress.py` (57), `tests/integration/test_discovery.py` | LIVE-01…09; static egress test tightened |
+| `docs/adr/ADR-013-…`, `docs/contracts/source-adapters.md`, `docs/runbooks/discovery-sources.md`, `.env.example`, `README.md` | Decision, contract, activation procedure, documentation |
+
+### Rollback
+
+- **Stop OSM:** stop passing `HERMECIOUS_OSM_*`; runs fail closed before any request, and a run in flight stops at its next policy check.
+- **Disable CSV:** set `enabled=False` in `seed_import.DESCRIPTOR`.
+- **Revert code:** revert `18834d9` and the docs commit.
+- **Data:** keep `source_records` and `discovery_candidates` rows (organization-scoped, attributed), and repair the schema forward. Downgrade 0007 only on a disposable database (tested by the migration suite).
+
+### VERDICT: IMPLEMENTATION COMPLETE, LIVE INTEGRATION UNVERIFIED (LIVE-01…09 VERIFIED; LIVE-10 BLOCKED)
+
+P2.2 is **not** marked VERIFIED, as Batch 04 requires when the canary cannot run.
+
+**Owner action:** to verify LIVE-10, follow `docs/runbooks/discovery-sources.md` for one bounded run and record the observed endpoint, query bounds, request count, counts and attribution here.
+
+**Effect on P2.3:** Batch 04 allows P2.3 on a "source-compatible imported fixture gate". The staged candidates from the CSV and fixture sources satisfy it, so P2.3 proceeds on that basis.
