@@ -118,6 +118,7 @@ def test_qualify_05_documented_deferral_nurtures_guessed_one_does_not() -> None:
     [
         (None, "unknown"),
         (OfferView("o", "x", None, None, False, True, ()), "weak"),
+        (OfferView("o", "x", "r", "v", False, True, ("admissions_intake", "fee_tracking")), "weak"),  # unpublished
         (OfferView("o", "x", "r", "v", True, False, ("admissions_intake",)), "weak"),
         (OfferView("o", "x", "r", "v", True, True, ()), "weak"),
         (OfferView("o", "x", "r", "v", True, True, ("student_records",)), "moderate"),

@@ -263,7 +263,9 @@ def test_qualify_08_overrides_are_versioned_audited_and_race_safe(
         and latest["dimensions"]["need_evidence"]["machine_value"] == "moderate"
     )
     assert set(latest["changed_fields"]) == {"decision", "need_evidence"}
-    assert override(client, operator, account, first, decision="exclude").status_code == 409  # stale revision
+    assert override(client, operator, account, first, decision="exclude").status_code == 409  # not the latest
+    stale_revision = latest | {"revision": latest["revision"] - 1}
+    assert override(client, operator, account, stale_revision, decision="exclude").status_code == 409
     with db(app) as session:
         audit = session.scalar(select(ActionAudit).where(ActionAudit.action_type == "account.assessment_overridden"))
         assert audit is not None and audit.details_json["before"]["decision"] == "contact_now"
