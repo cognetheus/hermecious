@@ -16,8 +16,9 @@ CONTRACT_VERSION = "source-adapter-v1"
 
 ShortText = Annotated[str, Field(min_length=1, max_length=250)]
 Keyword = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[\w .'-]+$")]
-# "/" allowed for typed upstream ids such as OSM "node/123" (P2.2); still never a URL.
-SourceKey = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
+# Single "/" separators allowed for typed upstream ids such as OSM "node/123" (P2.2); "//" is refused, so a
+# key can never be a URL.
+SourceKey = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*$")]
 StorageClassName = Literal["metadata_only", "derived_only", "full_allowed"]
 
 

@@ -17,6 +17,7 @@ from app.discovery import routes as discovery_routes
 from app.jobs import routes as job_routes
 from app.offers import routes as offer_routes
 from app.persistence.db import make_engine, make_session_factory
+from app.resolution import routes as identity_routes
 
 DEPENDENCY_TIMEOUT_SECONDS = 2
 
@@ -86,6 +87,7 @@ def create_app(
     app.include_router(account_routes.router)
     app.include_router(job_routes.router)
     app.include_router(discovery_routes.router)
+    app.include_router(identity_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

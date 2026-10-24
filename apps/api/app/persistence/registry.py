@@ -7,3 +7,4 @@ def register_models() -> None:
     import app.discovery.models  # noqa: F401
     import app.jobs.models  # noqa: F401
     import app.offers.models  # noqa: F401
+    import app.resolution.models  # noqa: F401

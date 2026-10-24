@@ -104,6 +104,7 @@ def stage_candidate(
     if row is None or row.payload_digest == digest:
         return "unchanged"  # identical content: no timestamp refresh, no audit noise
     previous = row.payload_digest
+    before = {k: (str(v) if v is not None else None) for k, v in _snapshot(row).items()}
     for name, value in {**fields, **provenance}.items():
         if name in ("source_record_id", "source_import_id") and value is None:
             continue  # keep existing provenance links; never drop them on revision
@@ -117,7 +118,18 @@ def stage_candidate(
         clock,
         "discovery.candidate_revised",
         row.id,
-        {"provider": row.provider, "revision": row.revision, "previous_digest": previous, "digest": digest},
+        {
+            "provider": row.provider,
+            "revision": row.revision,
+            "previous_digest": previous,
+            "digest": digest,
+            "previous": before,
+        },  # permitted listing fields only: the history of this source identity
         target_type="discovery_candidate",
     )
     return "revised"
+
+
+def _snapshot(row: DiscoveryCandidate) -> dict[str, object]:
+    return {name: getattr(row, name) for name in ("display_name", "name_local", "locality", "latitude", "longitude",
+                                                  "location_precision")}  # fmt: skip
