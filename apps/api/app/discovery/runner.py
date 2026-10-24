@@ -210,6 +210,9 @@ def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[Sourc
     cursor: str | None = None
     cap = min(run.budget.max_candidates, descriptor.result_limit)
     while True:
+        if cap - len(accepted) <= 0:  # checked first: a full result is a candidate cap, not a partial page cap
+            run.stop = "candidate_cap"
+            break
         if run.pages >= run.budget.max_search_pages:
             run.stop = "page_cap"
             break

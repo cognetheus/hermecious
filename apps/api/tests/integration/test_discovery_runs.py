@@ -525,3 +525,15 @@ def test_run_07_open_same_campus_match_blocks_new_account_until_decided(
     assert distinct.status_code == 200
     accepted = decide(client, csrf, run["id"], items[0], "accept_new")
     assert accepted.status_code == 200 and count(app, Account) == 1
+
+
+def test_run_04_worker_enforces_the_snapshotted_operator_budget(
+    app: FastAPI, client: TestClient, operator: str
+) -> None:
+    created = start(client, operator, max_candidates=2, max_search_pages=1)
+    assert created.status_code == 202
+    worker(app).run_once()
+    run = client.get(f"/api/v1/discovery/runs/{created.json()['id']}").json()
+    assert (run["displayed_count"], run["usage"]["search_pages"]) == (2, 1)
+    assert run["truncated"] is True and run["status"] == "completed" and run["stop_reason"] == "candidate_cap"
+    assert count(app, DiscoveryRunCandidate) == 2
