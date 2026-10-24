@@ -1438,3 +1438,95 @@ The prompt binds to `docs/phases/HERMECIOUS_BATCH_05_P3.1-P3.3.md`, which **does
 ### VERDICT: VERIFIED (RESEARCH-01…10) with fixture documents; live website research BLOCKED (not authorized; fails closed)
 
 **P3.2 is UNBLOCKED:** source-backed facts with locators and reviewer acceptance exist for the rubric to read. P3.2 remains subject to the same missing-Batch-05 caveat.
+
+## P3.2 — School operations signals (2026-10-24)
+
+**Scope:** `OPUS_P3.2_PROMPT.md` (Batch 05 absent; same caveat as P3.1). **Base:** `ce7ab23`. **Head:** `cf6b1c6` (code), plus the docs and ledger commit. **Migration:** `0011_school_signals` (`school_signal_snapshots`, append-only); the dev database is upgraded to `0011 (head)`.
+
+### Gate
+
+- P3.1 RESEARCH-01…10 are VERIFIED with fixture documents; live research is BLOCKED.
+- P3.2 consumes only P1.4 facts, including those created by P3.1 reviewer acceptance, so the live block does not prevent verification.
+
+### Design decisions (ADR-017)
+
+1. **A pure, pinned rubric** `school-signals-1.0` with exactly six keys. Inputs are the account's current facts plus the reviewed-link count.
+   - **Fact eligibility:** usable, stale (rights expired), unauditable (metadata-only), hypothesis, disputed or rejected.
+   - **States:** observed only from usable facts. Conflicting keeps every reference. Hypothesis covers unverified, unauditable or disputed evidence. Unknown otherwise, listing stale facts for re-checking.
+2. **Fixed, cautious wording.** Operator text is quoted as data. Each key carries a caveat (the notice is not process, tool, need, budget or consent) and one respectful discovery question. `ranking` is always `null`.
+3. **Immutable snapshots**, deduped on `(org, account, rubric, input_digest)`.
+   - The digest includes each fact's eligibility now, so expiry, corrections, rejections and new facts all produce a new digest.
+   - Reads flag `needs_reassessment`.
+   - JSONB key order is restored to the canonical order on read.
+
+### Acceptance evidence
+
+| ID | Executed test(s) | Observed | Status |
+|---|---|---|---|
+| SCHOOL-01 | `test_school_01_one_admissions_notice_gives_a_six_key_cited_brief`; unit `test_gate_01_admissions_notice_cites_exactly_its_fact` | One accepted admissions claim; generate gives 201 with `school-signals-1.0` and the six keys in canonical order. Admissions is `observed` and cites exactly that fact id; the other five are `unknown`. The citation carries the fixture https URL and excerpt flag; `ranking` is null. Latest has `needs_reassessment: false` | VERIFIED |
+| SCHOOL-02 | `test_school_02_listing_only_account_keeps_campus_and_autonomy_unknown`; unit `test_gate_02…`, cases 02 and 20 | A metadata-only listing admitted via P2.4 gives `linked_listings` 1, with all six keys `unknown`. The campus statement says "a listing is not a campus count" | VERIFIED |
+| SCHOOL-03 | `test_school_03_04_05_notices_never_become_process_tool_or_consent_claims`; unit case 03 plus the `FORBIDDEN` scan on all 20 cases | Admissions is `observed`, complexity `unknown`. The rubric's own words contain none of paper, Excel, no ERP, manual, arrears, opt-in, consented or priority | VERIFIED |
+| SCHOOL-04 | Same test; unit case 04 | Fee process is `observed`; the caveat reads "do not show how payments are reconciled"; no reconciliation or arrears claim | VERIFIED |
+| SCHOOL-05 | Same test; unit case 05 | Public phone listed gives contact route `observed`, with the caveat "not consent…". **The table list is unchanged by generation, and no campaign, contact, message, outbound or task table exists** | VERIFIED |
+| SCHOOL-06 | `test_school_06_contradictory_sources_are_conflicting_with_both_citations`; unit cases 06 and 11, `test_gate_06…` | Campus counts 2 vs 3 give `conflicting` with both ids and "none is chosen". A disputed fact alongside a supported one is also conflicting | VERIFIED |
+| SCHOOL-07 | `test_school_07_corrections_expiry_and_rejections_force_reassessment`; unit cases 07, 09, 10 and 12, `test_gate_07…`, `test_digest_changes…` | A rejected claim leaves campus `unknown`. A P1.4 correction gives `needs_reassessment: true`; the new snapshot shows fees as `hypothesis`. Source expiry gives reassessment true; the new snapshot shows admissions `unknown` with that fact in `stale_fact_ids` and freshness `stale`. History holds 4 snapshots, newest first, and the first snapshot is unchanged | VERIFIED |
+| SCHOOL-08 | `test_school_08_replay_and_concurrent_generation_yield_one_snapshot` | Generate twice: 201, then 200 with `created: false` and the same id. After new evidence, three concurrent generations give `[200, 200, 201]`, for 2 snapshots total. `UPDATE school_signal_snapshots` raises "append-only" | VERIFIED |
+| SCHOOL-09 | `test_school_09_auth_scope_urdu_injection_and_unsafe_citations`; unit cases 14 and 17 | Anonymous 401; observer generate 403 (read 200); missing CSRF 403. The Urdu-sourced claim (derived-only) gives "A cited source states: 3 campuses.". An injected operator signal appears only quoted, and "qualified" is not in the rubric's words. A `javascript:` source URL is refused at P1.2 insertion. Other organizations get 404 for generate, latest and snapshot | VERIFIED |
+| SCHOOL-10 | e2e `school.spec.ts` (3); `bash scripts/check.sh` | The operator generates the brief on the researched account: six cards appear. Campus is "Observed (cited source)" with "A cited source states: 2 campuses.", an https citation link and the discovery question; autonomy is `Unknown`. The only score, rank or qualify text is the disclaimer. Re-generating says "No evidence changed…"; reload and restart persist; the observer has 0 buttons. All prior suites pass, with no ranking and no sends | VERIFIED |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `cf6b1c6` | 0 | 16/16 PASS. Integration **320** (+7); unit + contract **288** (+26); web 2; **e2e 15 + 4** |
+| `./scripts/test-integration.sh tests/integration/test_school_signals.py` ×2 | 0 | 7 passed each time |
+| Dev: build, `alembic upgrade head` (`0010 -> 0011`), `up --wait`, smoke | 0 | All smoke checks passed |
+
+### Defects found and fixed during verification
+
+- **JSONB reorders keys,** so the API returned the six signals out of order. Reads now restore canonical rubric order (code fix).
+- **Test issues** (no rubric outputs or labels changed):
+  - a wording mismatch in the test ("does" vs "do");
+  - snapshots generated on one fixed-clock instant ordered by id, so the test now advances the clock.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| Expired evidence counts as usable | 4 |
+| Metadata-only certifies an observation | 2 |
+| Conflicts collapsed | 4 |
+| Hypothesis treated as observed | 3 |
+| A listing implies an observed campus | 4 |
+| Superseded facts included | 1 |
+| Digest ignores eligibility | 2 |
+| Snapshot dedupe removed | 1 |
+
+### Self-review of wording (as a school administrator would read it)
+
+- Statements only repeat what a cited source says ("A cited source states: …") or say "Unknown".
+- Caveats explain what the evidence does **not** show, without implying a deficiency.
+- The six discovery questions are open, neutral and answerable (for example "How are fee payments recorded and matched to students today?").
+- I removed nothing further. No statement presumes paper processes, problems, budget or interest.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/app/signals/{rubric,models,service,routes}.py` | Rubric and snapshots |
+| `apps/api/alembic/versions/0011_school_signals.py`, `tests/integration/test_migrations.py` | Schema; HEAD 0011 |
+| `apps/api/app/main.py`, `app/persistence/registry.py` | Router; models |
+| `apps/api/tests/unit/test_school_signals.py` (26), `tests/integration/test_school_signals.py` (7) | Tests |
+| `apps/web/app/accounts/[id]/{school-signals,school-signals-actions}.tsx`, `page.tsx`, `lib/signals.ts`, `e2e/school.spec.ts` | UI and E2E |
+| `docs/adr/ADR-017-…`, `docs/contracts/school-signals.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Stop:** stop generating briefs.
+- **Keep:** snapshots are immutable history.
+- **Revert code:** revert `20420fb` and `cf6b1c6`.
+- **Schema:** downgrade 0011 only on a disposable database.
+
+### VERDICT: VERIFIED (SCHOOL-01…10)
+
+**P3.3 is UNBLOCKED.** Caveats carried forward: Batch 05 is absent; live research is BLOCKED; P2.2 LIVE-10 is BLOCKED.
