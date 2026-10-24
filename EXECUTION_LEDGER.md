@@ -14,7 +14,8 @@ The authoritative record of subphase progress. Statuses: `not-started`, `in-prog
 | P1.2 | Core account/source/fact schema, rights policy, migrations (Batch 02) | verified |
 | P1.3 | Versioned offers and approved capability claims (Batch 02) | verified |
 | P1.4 | Account management API/UI, evidence entry, corrections (Batch 03) | verified |
-| P1.5 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
+| P1.5 | Durable Postgres jobs, transactional outbox, fenced runner (Batch 03) | verified |
+| P2.1 to P12.4 | See blueprint §4 and `docs/phases/` | not-started |
 
 ## P0.1 — Repository foundation (2026-10-23)
 
@@ -734,3 +735,98 @@ Reused: the P1.2 `accounts`, `source_records` and `account_facts` models and ser
 ### VERDICT: VERIFIED
 
 P1.5 is next.
+
+## P1.5 — Durable jobs, transactional outbox and safe worker execution (2026-10-24)
+
+**Scope:** Batch 03 §P1.5 and `OPUS_P1.5_PROMPT.md`. **Base:** `bcb4639`. **Head:** `dd614b7` (core), `d2d0bf4` (fixes and docs), plus this ledger commit.
+
+### Preflight
+
+P0.1, P0.2, P0.4 and P1.1–P1.4 are VERIFIED; the P0.3 remote-CI gap is carried forward. Before this subphase: an RQ worker (ADR-009) with Redis as the queue, but **no RQ job had ever been enqueued**; Alembic head `0005`; the P1.4 `action_audits` table; P0.4 logs and correlation.
+
+### Design decisions (ADR-011)
+
+1. **PostgreSQL is the only queue authority.** RQ needs Redis as queue truth, so, as the batch instructs, the worker process now runs a small bounded Postgres runner. RQ stays installed but dormant (no second queue). Redis carries only wake-up notifications from the outbox publisher. ADR-009's runtime role is marked superseded.
+2. **Migration `0006`:**
+   - `jobs`: idempotency key per (org, type, key), canonical payload digest, attempts ≤ `max_attempts` (1–10), DB-clock lease plus **fencing token**, sanitized `last_error_class`, CHECKs for lease and finish invariants, and a partial claimable index.
+   - `outbox_events`: `dispatched_at` + `dispatch_sink` mean *notification delivered*; lease and backoff columns.
+   - `account_audit_snapshots`: the DB-only effect, with `UNIQUE(org, job_id)`.
+3. **Transaction boundary.** `enqueue_job` and `record_outbox_event` never commit; the producer (`request_account_snapshot`, HTTP `POST /accounts/{id}/snapshots` with `Idempotency-Key`) commits the domain audit, the job and the event together.
+4. **Execution.** The handler effect and the fenced completion are one transaction. Stale owners match 0 rows and roll back. Errors use an explicit taxonomy, with capped jittered exponential backoff. Expired leases are reclaimed, or dead-lettered once their attempts are exhausted.
+5. **Health.** Worker health is now runner heartbeat + Postgres reachable, independent of Redis. Before migrations the runner waits without heartbeating (unhealthy, no crash loop).
+6. **Registry:** `diagnostic.noop` (dev/test) and `account.audit_snapshot`. Payloads are Pydantic, ≤ 16 KiB, with no credential fields and nothing the log scrubber would redact.
+7. **Honest limit:** execution is at-least-once, and exactly-once holds only for **local DB effects**. **No external side-effect handlers exist; nothing claims exactly-once messaging.**
+
+### Acceptance evidence
+
+| ID | Executed test / command | Persisted outcome observed | Status |
+|---|---|---|---|
+| JOB-01 | `test_domain_change_job_and_outbox_commit_together` | Audit `account.snapshot_requested`, job `pending` and outbox `job.enqueued` committed; same organization; `jobs.correlation_id` = audit `request_id` = bound request ID; event keyed by job ID; not dispatched | PASS |
+| JOB-02 | `test_exception_before_commit_leaves_no_job_event_or_audit` | After the injected exception: 0 jobs, 0 events, no snapshot audit | PASS |
+| JOB-03 | `test_committed_job_without_notification_is_found_by_polling`; **real containers**: `docker compose stop worker`, producer commits and exits (no notify), `start worker` | Test: succeeded, 1 attempt, 1 snapshot; second `run_once` gives `[]`; event dispatched to `none`. Real: `pending` while the worker was down, then `succeeded` after restart, snapshots 1, attempts 1 | PASS |
+| JOB-04 | `test_redis_down_does_not_strand_work_and_notification_retries_later`; **real containers**: `docker compose stop redis` with the worker running | Test: the job succeeded while the event stayed undispatched (`sink_unavailable`); with Redis back it was dispatched (`redis`), the wake list holds the event UUID only, and there was no re-run. Real: the job succeeded with 1 snapshot, the **worker stayed healthy** for 25s+ of outage, the event was undispatched during the outage and dispatched `redis` after Redis returned, and the job was untouched | PASS |
+| JOB-05 | `test_racing_workers_claim_each_job_exactly_once` (3 workers × 10 jobs) | Each job claimed once (attempts 1), 10 snapshots, outcome IDs equal the enqueued IDs | PASS |
+| JOB-06 | `test_idempotent_enqueue_and_payload_mismatch`, `test_concurrent_identical_enqueues_create_one_job` (4 threads), `test_http_idempotency_key_contract` | An exact replay gives the same receipt (`created=False`) and one snapshot-requested audit. A different account with the same key gives 409; v2 is "not registered". Concurrency gives 1 job and 1 event. HTTP: 202, 202 with the same `job_id`; clash 409; missing or bad key 422; the job view has no payload | PASS |
+| JOB-07 | `test_crash_inside_the_effect_transaction_leaves_no_effect_and_reclaim_succeeds`, `test_committed_effect_without_ack_is_not_duplicated_and_stale_owner_is_fenced`, `test_expired_lease_on_last_attempt_goes_dead_not_silently_lost`; **real**: SIGKILL of the worker process | (a) An uncommitted effect leaves 0 snapshots; the lease is held until expiry; the rescuer succeeds with attempts 2 and 1 snapshot. (b) A committed effect without ack: the new owner succeeds and the stale `complete_job` raises `LeaseLost`, the stale `fail_job` returns `None`, and the final status and digest are the winner's, with **1 snapshot** (absorbed by the unique key). (c) Exhausted attempts give `dead`/`lease_expired`. Real: RestartCount 0→1 and the queued job succeeded | PASS |
+| JOB-08 | `test_transient_failures_back_off_then_succeed`, `test_permanent_failure_is_dead_immediately`, `test_retries_are_bounded_and_errors_are_sanitized`, `test_notification_backoff_grows_per_failed_delivery` | Delays within ±20% of 2s then 4s; no claim before due; succeeded on attempt 3. Permanent gives dead after 1 attempt (`bad_input`), never retried. An unknown error with a secret message gives retry_wait ×2 then `dead`/`retries_exhausted`; logs contain neither `job-secret-value` nor `hunter2`. Notification backoff 2/4/8/16s (±20%) | PASS |
+| JOB-09 | `test_racing_publishers_deliver_each_event_once` (2 publishers × 8 events), `test_failed_notification_is_retried_after_backoff_never_lost`, `test_publisher_crash_after_claim_is_recovered_after_lease_timeout` | Each event notified exactly once and all dispatched, **while jobs are still `pending`** (notify ≠ process). A failure is retried after backoff, not before; attempts 2. A crashed publisher's lease blocks others until it expires, then the event is delivered once | PASS |
+| JOB-10 | `test_malicious_or_unsupported_payloads_fail_closed` (11 cases), `test_cross_org_enqueue_read_and_injected_job_fail_closed`, `test_ops_diagnostics_are_owner_only_scoped_and_payload_free`; **`bash scripts/check.sh`** | Refused: shell name, function path, unknown version, 20 kB payload, `password=`, phone, email, `token` key, extra field, noop in production, bad UUID; 0 jobs and 0 events each time. A cross-org enqueue gives 404; a cross-org job read gives 404; an injected job pointing at another org's account goes dead (`account_not_found`) with no foreign snapshot. Ops view: operator 403; owner sees counts and dead classes, no payloads or account IDs. **check.sh 16/16 PASS**: integration 204 tests (P1.1–P1.4 suites included), unit + contract 122, web 2, e2e 9 + 1 after restart | PASS |
+
+### Fault injection on real containers (throwaway project `hermecious-p15`, removed with `down -v`)
+
+Results are under JOB-03, JOB-04 and JOB-07 above. Totals: 3 jobs succeeded, 3 snapshots, **0 duplicate snapshots**. Worker logs: 4 `jobs.metrics` lines and 3 `job.succeeded`, with 0 occurrences of the account ID (no payloads).
+
+### Defects found and fixed during verification
+
+1. **Outbox notification retried every ~2s during a Redis outage** (10 attempts in 25s), because the backoff always used attempt 1. It now grows per failed delivery. Regression test added.
+2. **The worker crash-looped before migrations**, from an unhandled `ProgrammingError`. It now waits without heartbeating (unhealthy). Tested against a real unmigrated scratch DB. The e2e harness and README now migrate before the worker starts. **The README clean room was re-verified** at `d2d0bf4`: fresh SSH clone, README steps, 6 migrations, smoke all PASS.
+
+### Mutation checks (committed first; restored with `git checkout`; tree clean)
+
+| Mutation | Caught by |
+|---|---|
+| `complete_job` ignores the fencing token | `test_committed_effect_without_ack_is_not_duplicated_and_stale_owner_is_fenced` |
+| Claim without `SKIP LOCKED` | `test_racing_workers_claim_each_job_exactly_once` |
+
+### P0.2 regression with changed semantics
+
+`scripts/recovery-local.sh` was updated per ADR-011:
+- **Postgres outage:** the worker reported unhealthy after 28s and was healthy again after the restart.
+- **Redis outage:** the worker **stayed healthy** for 40s+ with 0 restarts.
+- **A5 persistence:** PASS.
+
+`smoke-local.sh` PASS. Dev DB migrated `0005 -> 0006`.
+
+### Security and privacy
+
+- Typed allowlist only, with no dynamic code paths.
+- Payload size, credential and contact checks.
+- Errors are stored as classes only; logs are scrubbed.
+- Organization-scoped receipts; owner-only diagnostics with no payloads.
+- **No external sends, fetches or agent orchestration.**
+- Redis receives event UUIDs only.
+
+### Changed files
+
+| File | Reason |
+|---|---|
+| `apps/api/alembic/versions/0006_jobs_outbox.py` | Tables, constraints, indexes |
+| `apps/api/app/jobs/{models,registry,service,runner,routes}.py` | Jobs and outbox |
+| `apps/api/app/accounts/{models,snapshots,routes}.py` | Snapshot effect, producer, endpoint |
+| `apps/api/app/workers/worker.py` | The runner replaces the RQ loop; new health check |
+| `apps/api/app/core/{settings,logging}.py` | `HERMECIOUS_JOB_NOTIFY`; metric log keys |
+| `apps/api/app/main.py`, `app/persistence/registry.py` | Wiring |
+| `apps/api/tests/integration/test_jobs.py` (31 tests), `test_dependencies.py`, `test_migrations.py`; `tests/unit/test_worker_health.py`, `test_entrypoints.py` | Tests |
+| `compose.yaml`, `.env.example` | The worker depends on Postgres, not Redis; notify setting |
+| `scripts/{recovery-local,test-e2e}.sh` | New health semantics; migrate before the worker |
+| `docs/adr/ADR-011-postgres-jobs-and-outbox.md`, `ADR-009` (superseded note), `docs/contracts/job-outbox.md`, `docs/runbooks/{jobs,local-development}.md`, `README.md` | Documentation |
+
+### Rollback
+
+- **Code:** revert the worker image. Rows stay, and unknown types or versions fail closed (dead `invalid_payload`), so nothing runs with the wrong schema.
+- **Disposable DB:** `alembic downgrade 0005` (migration tests).
+- **Data-bearing DB:** drain or export pending and dead jobs first. Never delete pending work, and never `down -v`.
+
+### VERDICT: VERIFIED
+
+P2.1 is next.
