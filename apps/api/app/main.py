@@ -11,6 +11,7 @@ from app.api.middleware import install_error_handling
 from app.auth import routes as auth_routes
 from app.auth.dependencies import assert_api_routes_protected
 from app.auth.rate_limit import LoginRateLimiter
+from app.campaigns import routes as campaign_routes
 from app.core.clock import Clock, SystemClock
 from app.core.settings import Settings
 from app.discovery import routes as discovery_routes
@@ -96,6 +97,7 @@ def create_app(
     app.include_router(signal_routes.router)
     app.include_router(qualification_routes.router)
     app.include_router(evaluation_routes.router)
+    app.include_router(campaign_routes.router)
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app
