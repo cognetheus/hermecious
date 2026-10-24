@@ -141,6 +141,19 @@ class DiscoveryRunPayload(_Payload):
     run_id: uuid.UUID
 
 
+def _research_run(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.research.service import handle_research_job  # noqa: PLC0415  # avoids an import cycle
+
+    result: dict[str, Any] = handle_research_job(db, ctx, payload)
+    return result
+
+
+class ResearchRunPayload(_Payload):
+    """`research.run` v1 (P3.1): the run row holds the source selection and budget; the payload only names it."""
+
+    run_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -151,6 +164,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         AccountSnapshotPayload,
         _account_snapshot,
         max_attempts=5,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("research.run", 1): JobSpec(
+        "research.run",
+        1,
+        ResearchRunPayload,
+        _research_run,
+        max_attempts=3,
         environments=frozenset({"development", "test", "production"}),
     ),
     ("discovery.run", 1): JobSpec(
