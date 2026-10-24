@@ -625,3 +625,19 @@ def test_ops_diagnostics_are_owner_only_scoped_and_payload_free(
     assert body["metrics"]["dead"] == 1 and body["metrics"]["succeeded"] == 1
     assert [d["last_error_class"] for d in body["dead"]] == ["bad_input"]
     assert "payload" not in json.dumps(body) and str(org.account_id) not in json.dumps(body)
+
+
+def test_notification_backoff_grows_per_failed_delivery(
+    app: FastAPI, org: Org, factory: sessionmaker[Session], clock: FixedClock
+) -> None:
+    """Regression (found in the real-container run): retries must back off exponentially, not every 2s."""
+    request(app, org)
+    sink = RecordingSink(fail=10)
+    delays = []
+    for _ in range(4):
+        publish(factory, clock, sink)
+        [event] = rows(app, OutboxEvent)
+        delays.append((event.next_attempt_at - clock.now()).total_seconds())
+        clock.advance(event.next_attempt_at - clock.now() + timedelta(milliseconds=1))
+    for delay, base in zip(delays, [2, 4, 8, 16], strict=True):  # first failure = attempt 1 -> 2s base
+        assert base * 0.8 <= delay <= base * 1.2, delays

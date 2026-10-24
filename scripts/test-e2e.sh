@@ -58,8 +58,11 @@ wait_http() { # wait_http <url> <seconds>
 }
 
 echo "E2E project: $project (web $E2E_BASE_URL)"
-compose up --build -d --wait >/dev/null 2>&1 || { echo "ERROR stack did not become healthy"; compose ps; exit 2; }
+# Migrate before the worker starts: it stays unhealthy (by design) until the schema exists.
+compose build >/dev/null 2>&1 || { echo "ERROR build failed"; exit 2; }
+compose up -d --wait postgres redis >/dev/null 2>&1 || { echo "ERROR postgres/redis did not become healthy"; exit 2; }
 compose run --rm --no-deps api python -m alembic upgrade head >/dev/null 2>&1 || { echo "ERROR migrations failed"; exit 2; }
+compose up -d --wait >/dev/null 2>&1 || { echo "ERROR stack did not become healthy"; compose ps; exit 2; }
 compose run --rm --no-deps -T -e E2E_RUN_ID -e E2E_PASSWORD api python - <<'PY' || { echo "ERROR seeding failed"; exit 2; }
 import os
 

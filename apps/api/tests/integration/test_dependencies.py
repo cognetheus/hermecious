@@ -73,3 +73,30 @@ def test_runner_loop_drains_a_job_heartbeats_and_stops(app_settings: Settings, a
         job = session.get(Job, receipt.job_id)
         assert job is not None and job.status == "succeeded"
     assert len(beats) == 2
+
+
+def test_runner_waits_unhealthy_instead_of_crashing_before_migrations(settings: Settings) -> None:
+    import threading
+
+    from app.jobs.runner import JobRunner, NoSink
+    from app.persistence.db import make_engine, make_session_factory
+    from tests.integration.db import plain, scratch_database
+
+    with scratch_database(str(settings.database_url), "unmigrated") as url:
+        engine = make_engine(plain(url))
+        stop = threading.Event()
+        beats: list[int] = []
+        timer = threading.Timer(2.5, stop.set)
+        timer.start()
+        JobRunner(
+            make_session_factory(engine),
+            worker_id="early",
+            environment="test",
+            sink=NoSink(),
+            wake_client=None,
+            heartbeat=lambda: beats.append(1),
+            poll_seconds=1,
+        ).run_forever(stop)  # returns when stopped; must not raise
+        timer.cancel()
+        engine.dispose()
+    assert beats == []  # never reported healthy against an unmigrated schema

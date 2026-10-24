@@ -1,6 +1,6 @@
 # ADR-009: RQ as the background worker mechanism
 
-- **Status:** Accepted by the owner on 2026-10-23.
+- **Status:** Accepted by the owner on 2026-10-23. **Runtime role superseded by [ADR-011](ADR-011-postgres-jobs-and-outbox.md) (2026-10-24):** the worker now runs a Postgres-authoritative job runner; RQ stays installed but dormant.
 - **Date:** 2026-10-23
 - **Source:** blueprint §1 ("Dramatiq or RQ: select one via ADR"), ADR-001 open decision, Batch 01 P0.2
 

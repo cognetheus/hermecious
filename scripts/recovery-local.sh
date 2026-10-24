@@ -35,7 +35,7 @@ wait_until() {
 ready_is() { [ "$(status_of /health/ready)" = "$1" ]; }
 worker_is() { [ "$(worker_health)" = "$1" ]; }
 
-step "A3: Postgres outage"
+step "A3: Postgres outage (also the job queue authority, ADR-011)"
 docker compose stop postgres >/dev/null 2>&1
 if wait_until 30 ready_is 503; then
   pass "ready -> 503 $(body_of /health/ready)"
@@ -43,10 +43,13 @@ else
   fail "ready did not become 503 with Postgres stopped"
 fi
 if [ "$(status_of /health/live)" = 200 ]; then pass "live stays 200 during Postgres outage"; else fail "live not 200 during Postgres outage"; fi
+outage_started=$SECONDS
+if wait_until 90 worker_is unhealthy; then pass "worker reported unhealthy after $((SECONDS - outage_started))s (queue DB down)"; else fail "worker never reported unhealthy (now: $(worker_health))"; fi
 docker compose start postgres >/dev/null 2>&1
 if wait_until 60 ready_is 200; then pass "ready recovers to 200 after Postgres restart"; else fail "ready did not recover after Postgres restart"; fi
+if wait_until 120 worker_is healthy; then pass "worker healthy again after Postgres restart"; else fail "worker did not recover (now: $(worker_health))"; fi
 
-step "A4: Redis outage and worker recovery"
+step "A4: Redis outage (optional wake-up channel only, ADR-011)"
 worker_restarts_before=$(docker inspect --format '{{.RestartCount}}' "$(docker compose ps -q worker)")
 docker compose stop redis >/dev/null 2>&1
 if wait_until 30 ready_is 503; then
@@ -54,19 +57,16 @@ if wait_until 30 ready_is 503; then
 else
   fail "ready did not become 503 with Redis stopped"
 fi
-if docker compose exec -T worker python -m app.workers.healthcheck >/dev/null 2>&1; then
-  fail "worker health check passed while Redis was down"
+sleep 40  # longer than the health check window: a Redis outage must not make the worker unhealthy
+if worker_is healthy && docker compose exec -T worker python -m app.workers.healthcheck >/dev/null 2>&1; then
+  pass "worker stays healthy while Redis is down (jobs keep flowing via Postgres polling)"
 else
-  pass "worker health check fails while Redis is down"
+  fail "worker became unhealthy during a Redis-only outage (now: $(worker_health))"
 fi
-outage_started=$SECONDS
-if wait_until 90 worker_is unhealthy; then pass "worker container reported unhealthy after $((SECONDS - outage_started))s"; else fail "worker never reported unhealthy (now: $(worker_health))"; fi
 docker compose start redis >/dev/null 2>&1
-redis_restarted=$SECONDS
 if wait_until 60 ready_is 200; then pass "ready recovers to 200 after Redis restart"; else fail "ready did not recover after Redis restart"; fi
-if wait_until 150 worker_is healthy; then pass "worker healthy again $((SECONDS - redis_restarted))s after Redis restart"; else fail "worker did not recover (now: $(worker_health))"; fi
 worker_restarts_after=$(docker inspect --format '{{.RestartCount}}' "$(docker compose ps -q worker)")
-pass "worker container restarts during outage: $((worker_restarts_after - worker_restarts_before))"
+if [ "$worker_restarts_after" = "$worker_restarts_before" ]; then pass "worker container restarts during Redis outage: 0"; else fail "worker restarted during Redis outage"; fi
 
 step "A5: Postgres data survives a full stack restart"
 token="p02-$(date +%s)-$$"

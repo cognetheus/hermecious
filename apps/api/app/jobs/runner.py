@@ -251,13 +251,13 @@ def publish_outbox(
                 "  ORDER BY next_attempt_at, id LIMIT :limit FOR UPDATE SKIP LOCKED)"
                 " UPDATE outbox_events SET lease_owner = :worker, lease_expires_at = :now + :lease"
                 " FROM due WHERE outbox_events.id = due.id"
-                " RETURNING outbox_events.id, outbox_events.event_type"
+                " RETURNING outbox_events.id, outbox_events.event_type, outbox_events.attempts"
             ),
             {"now": now, "limit": max_items, "worker": worker_id, "lease": OUTBOX_LEASE},
         ).all()
         db.commit()
         counts = {"dispatched": 0, "failed": 0}
-        for event_id, event_type in rows:
+        for event_id, event_type, attempts in rows:
             try:
                 sink.notify(event_id, event_type)
             except (redis.exceptions.RedisError, OSError) as exc:
@@ -268,7 +268,7 @@ def publish_outbox(
                         " WHERE id = :id AND lease_owner = :worker AND dispatched_at IS NULL"
                     ),
                     {
-                        "next": now + backoff(1, rng),
+                        "next": now + backoff(attempts + 1, rng),  # grows per failed delivery, capped
                         "error": "sink_unavailable",
                         "id": event_id,
                         "worker": worker_id,
@@ -387,6 +387,12 @@ class JobRunner:
                 outcomes = self.run_once()
             except _DB_TRANSIENT as exc:
                 logger.warning("worker.database_unavailable", extra={"context": {"error_class": type(exc).__name__}})
+            except sqlalchemy.exc.ProgrammingError:
+                # Schema not migrated yet: keep waiting (no crash loop) but do NOT heartbeat,
+                # so the container stays unhealthy until migrations are applied.
+                logger.warning("worker.schema_not_ready", extra={"context": {"reason": "run alembic upgrade head"}})
+                self._wait(stop)
+                continue
             self.heartbeat()
             if not outcomes:
                 self._wait(stop)

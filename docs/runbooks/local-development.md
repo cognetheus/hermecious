@@ -7,10 +7,10 @@ One canonical stack, defined in [`compose.yaml`](../../compose.yaml) at the repo
 | Service | What it is | Host access | Container health check |
 |---|---|---|---|
 | `api` | FastAPI (`python -m app`) | `127.0.0.1:${HERMECIOUS_API_PORT:-8000}` | `GET /health/live` |
-| `worker` | RQ worker (`python -m app.workers`, ADR-009) | none | this worker's own Redis heartbeat is fresh |
+| `worker` | Postgres job runner + outbox publisher (`python -m app.workers`, ADR-011) | none | runner loop heartbeat fresh AND Postgres reachable (not Redis) |
 | `web` | Next.js standalone server | `127.0.0.1:${HERMECIOUS_WEB_PORT:-3000}` | `GET /health/live` (web server only) |
 | `postgres` | PostgreSQL 18.6, system of record | none (internal network only) | `pg_isready` |
-| `redis` | Redis 8.10, broker only, no persistence | none (internal network only) | `redis-cli ping` |
+| `redis` | Redis 8.10, optional worker wake-ups only, no persistence | none (internal network only) | `redis-cli ping` |
 
 Postgres data lives in the named volume `hermecious_postgres-data`. Redis holds nothing durable by design, because Postgres is authoritative (ADR-009).
 
@@ -27,7 +27,11 @@ chmod 600 .env
 # Set a URL-safe Postgres password (the api and worker connection URL embeds it):
 sed -i.bak "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env && rm .env.bak
 bash scripts/verify-setup.sh
+docker compose up --build -d
+docker compose run --rm --no-deps api python -m alembic upgrade head
 ```
+
+The worker reports `unhealthy` (log event `worker.schema_not_ready`) until the migrations have been applied; it starts processing within a few seconds afterwards.
 
 If `POSTGRES_PASSWORD` is empty, `docker compose` refuses to run with `required variable POSTGRES_PASSWORD is missing a value`.
 
@@ -67,7 +71,8 @@ bash scripts/recovery-local.sh
 
 What to expect:
 - **Postgres or Redis down:** `/health/ready` returns 503 and `/health/live` stays 200. Recovery is automatic once the dependency returns.
-- **Redis down:** the worker becomes `unhealthy` within about 30 seconds and recovers without a container restart (RQ reconnects with backoff, capped at 60 seconds).
+- **Redis down:** the worker stays `healthy` and keeps processing jobs by polling Postgres (ADR-011); only wake-ups are slower.
+- **Postgres down:** the worker becomes `unhealthy` (its queue is unreachable) and recovers when Postgres returns.
 - **Worker process crash:** `restart: unless-stopped` restarts it, and it registers under a fresh name.
 
 ## Troubleshooting
