@@ -8,7 +8,7 @@ Trust boundary:
 - template approval comes only from signed synthetic fixtures (non-production, synthetic accounts only);
 - inbound service context comes only from signed synthetic fixtures; a client never supplies a time;
 - campaign, gate, offer, evidence and membership state come from the same checks Draft Studio uses;
-- usage counters are zero: no send ledger exists in P4.3 (P4.5 simulations will feed them).
+- usage counters are zero for real readings (no send ledger exists); the P4.5 simulator passes its own simulated counts.
 """
 
 import hashlib
@@ -96,8 +96,12 @@ def decide(
     campaign_id: uuid.UUID | None,
     template_ref: str | None,
     inbound_ref: str | None,
+    usage: policy.Usage | None = None,
 ) -> dict[str, Any]:
-    """A read-only reading (no audit, no commit). Callers that act on it re-read; it is never cached."""
+    """A read-only reading (no audit, no commit). Callers that act on it re-read; it is never cached.
+
+    `usage` is supplied only by the P4.5 simulator (its own simulated counts); real sends do not exist yet.
+    """
     contact = contacts.get(db, org, contact_id)
     account = db.scalar(select(Account).where(Account.organization_id == org, Account.id == contact.account_id))
     if account is None:  # pragma: no cover  # composite FK
@@ -164,7 +168,7 @@ def decide(
         inbound=inbound,
         inbound_blocker=inbound_blocker,
         human_owner_active=_active(db, org, owner),
-        usage=policy.Usage(),
+        usage=usage or policy.Usage(),
     )
     decision = policy.evaluate(inputs)
     suppression_revision = contacts.suppression_revision(db, org)

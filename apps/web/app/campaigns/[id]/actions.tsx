@@ -101,3 +101,39 @@ export function Lifecycle({ campaignId, status, mode }: { campaignId: string; st
     </p>
   );
 }
+
+export function DryRun({ campaignId, scenarios }: { campaignId: string; scenarios: readonly string[] }) {
+  const router = useRouter();
+  const [scenario, setScenario] = useState("all_allow");
+  const [message, setMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  async function start() {
+    setPending(true);
+    setMessage(null);
+    try {
+      const result = await postJson(`/api/v1/campaigns/${campaignId}/simulations`, { scenario, idempotency_key: newKey("dryrun") });
+      if (result.ok) router.push(`/campaigns/${campaignId}/simulations/${(result.data as { id: string }).id}`);
+      else setMessage(errorMessage(result.data));
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <p>
+      <label htmlFor="dry-run-scenario">Scenario</label>{" "}
+      <select id="dry-run-scenario" value={scenario} onChange={(e) => setScenario(e.target.value)}>
+        {scenarios.map((s) => (
+          <option key={s} value={s}>
+            {s.replaceAll("_", " ")}
+          </option>
+        ))}
+      </select>{" "}
+      <button type="button" disabled={pending} onClick={start}>
+        Dry Run
+      </button>{" "}
+      <span role="status" aria-live="polite">
+        {message}
+      </span>
+    </p>
+  );
+}

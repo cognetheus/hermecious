@@ -154,6 +154,20 @@ class ResearchRunPayload(_Payload):
     run_id: uuid.UUID
 
 
+def _simulation_run(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.core.settings import load_settings  # noqa: PLC0415
+    from app.simulations.service import handle_simulation_job  # noqa: PLC0415  # avoids an import cycle
+
+    result: dict[str, Any] = handle_simulation_job(db, ctx, payload, load_settings())
+    return result
+
+
+class SimulationRunPayload(_Payload):
+    """`simulation.run` v1 (P4.5): a zero-egress dry run. Names the run only; it can never send anything."""
+
+    run_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -179,6 +193,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         1,
         DiscoveryRunPayload,
         _discovery_run,
+        max_attempts=3,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("simulation.run", 1): JobSpec(
+        "simulation.run",
+        1,
+        SimulationRunPayload,
+        _simulation_run,
         max_attempts=3,
         environments=frozenset({"development", "test", "production"}),
     ),

@@ -244,8 +244,18 @@ def test_eval_02_03_frozen_universe_and_verdicts(app: FastAPI, client: TestClien
         assert judge(client, operator, run["id"], excel_item, "unsupported").json()["verdict"] == "unsupported"
     good = next(i for i in body["item_list"] if i["item_kind"] == "fact" and "campus_count" in i["display_text"])
     assert judge(client, operator, run["id"], good, "supported").status_code == 200
-    team.account("Late Addition School", "Area 77", [("campus_count", {"count": 3})])
-    assert create(client, operator, seed="frozen").json()["corpus_fingerprint"] != fingerprint
+    late = team.account("Late Addition School", "Area 77", [("campus_count", {"count": 3})])
+    rerun = create(client, operator, seed="frozen").json()
+    with db(app) as session:
+        rerun_ids = session.scalar(
+            select(EvidenceEvalRun.account_ids).where(EvidenceEvalRun.id == uuid.UUID(rerun["id"]))
+        )
+    # The sample is the first 30 of 32 by sha256(seed:id), and `late` has a random id. Either it enters the sample
+    # and the fingerprint changes, or the same 30 are chosen and the frozen fingerprint is reproduced exactly.
+    if str(late) in (rerun_ids or []):
+        assert rerun["corpus_fingerprint"] != fingerprint
+    else:
+        assert sorted(rerun_ids or []) == sorted(stored.account_ids) and rerun["corpus_fingerprint"] == fingerprint
 
 
 # --- EVAL-04 ------------------------------------------------------------------------------------------------------
