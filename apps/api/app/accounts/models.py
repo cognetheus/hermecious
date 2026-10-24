@@ -288,3 +288,37 @@ class ActionAudit(Base):
     details_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     request_id: Mapped[str | None] = mapped_column(String(64))
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AccountAuditSnapshot(Base):
+    """Benign, DB-only job effect (P1.5): a sanitized count snapshot of an account.
+
+    UNIQUE(organization_id, job_id) makes the effect idempotent independently of
+    job acknowledgement: a re-run of the same job can never write a second row.
+    """
+
+    __tablename__ = "account_audit_snapshots"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "job_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "account_id"],
+            ["accounts.organization_id", "accounts.id"],
+            name="fk_account_audit_snapshots_org_account",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "job_id"],
+            ["jobs.organization_id", "jobs.id"],
+            name="fk_account_audit_snapshots_org_job",
+        ),
+        CheckConstraint("snapshot_digest ~ '^[0-9a-f]{64}$'", name="snapshot_digest_format"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    account_id: Mapped[uuid.UUID]
+    job_id: Mapped[uuid.UUID]
+    account_version: Mapped[int] = mapped_column(Integer)
+    fact_count: Mapped[int] = mapped_column(Integer)
+    current_fact_count: Mapped[int] = mapped_column(Integer)
+    snapshot_digest: Mapped[str] = mapped_column(String(64))
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

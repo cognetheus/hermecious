@@ -1,48 +1,49 @@
-"""RQ worker runtime (ADR-009) and its container health check.
+"""Worker process (ADR-011): the Postgres-authoritative job runner, and its container health check.
 
-Each worker process registers under a unique name, which it records in
-NAME_FILE so the health check can find this exact worker's heartbeat in
-Redis. The check fails when Redis is unreachable or the heartbeat is stale,
-so a healthy Redis cannot make a dead or hung worker look healthy.
+PostgreSQL holds all job and outbox state. Redis, when configured, only
+carries wake-up notifications; if it is down the runner keeps polling the
+database, so the health check deliberately does not depend on Redis.
 """
 
 import logging
+import os
+import signal
 import socket
+import sys
+import threading
+import time
 import uuid
-from datetime import datetime, timedelta
 from pathlib import Path
 
+import psycopg
 from redis import Redis
-from rq import Worker
-from rq.utils import now
 
 from app.core.logging import configure_logging
 from app.core.settings import SettingsError, load_settings
-from app.workers.tracing import TracingMixin
+from app.jobs.runner import JobRunner, NoSink, NotificationSink, RedisSink
+from app.persistence.db import make_engine, make_session_factory
 
-QUEUES = ["default"]
-# RQ refreshes the heartbeat at least every WORKER_TTL_SECONDS - 15 while idle.
-WORKER_TTL_SECONDS = 30
-MAX_HEARTBEAT_AGE = timedelta(seconds=WORKER_TTL_SECONDS)
 # Container-local; the worker image has a single unprivileged user.
-NAME_FILE = Path("/tmp/hermecious-worker-name")  # noqa: S108
+HEARTBEAT_FILE = Path("/tmp/hermecious-worker-heartbeat")  # noqa: S108
+MAX_HEARTBEAT_AGE_SECONDS = 60
 HEALTHCHECK_TIMEOUT_SECONDS = 2
 
 logger = logging.getLogger("app.worker")
 
 
-class TracedWorker(TracingMixin, Worker):
-    pass
+def write_heartbeat() -> None:
+    HEARTBEAT_FILE.write_text(str(time.time()))
 
 
-def heartbeat_is_fresh(last_heartbeat: datetime | None, at: datetime) -> bool:
-    return last_heartbeat is not None and at - last_heartbeat <= MAX_HEARTBEAT_AGE
+def heartbeat_is_fresh(now: float) -> bool:
+    try:
+        return now - float(HEARTBEAT_FILE.read_text()) <= MAX_HEARTBEAT_AGE_SECONDS
+    except (OSError, ValueError):
+        return False
 
 
 def run() -> int:
-    # Forget any previous process's name first, so its still-fresh heartbeat
-    # cannot vouch for this process.
-    NAME_FILE.unlink(missing_ok=True)
+    HEARTBEAT_FILE.unlink(missing_ok=True)  # a previous process's heartbeat must not vouch for this one
     try:
         settings = load_settings()
     except SettingsError as exc:
@@ -50,46 +51,46 @@ def run() -> int:
         logger.critical("config.invalid", extra={"context": {"settings": exc.names}})
         return 1
     configure_logging("worker", settings.environment, settings.log_level)
-    # A fresh suffix per process avoids RQ rejecting a restart while the
-    # previous registration (same hostname) has not yet expired.
-    name = f"hermecious-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-    NAME_FILE.write_text(name)
-    worker = TracedWorker(
-        QUEUES,
-        connection=Redis.from_url(str(settings.redis_url)),
-        name=name,
-        worker_ttl=WORKER_TTL_SECONDS,
-        log_job_description=False,  # job arguments may carry personal data
+    factory = make_session_factory(make_engine(str(settings.database_url)))
+    wake: Redis | None = None
+    sink: NotificationSink = NoSink()
+    if settings.job_notify == "redis":
+        wake = Redis.from_url(str(settings.redis_url), socket_connect_timeout=2, socket_timeout=10)
+        sink = RedisSink(wake)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    runner = JobRunner(
+        factory,
+        worker_id=f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}",
+        environment=settings.environment,
+        sink=sink,
+        wake_client=wake,
+        heartbeat=write_heartbeat,
     )
-    worker.work(logging_level=settings.log_level)
+    runner.run_forever(stop)
     return 0
 
 
 def healthcheck() -> int:
-    try:
-        name = NAME_FILE.read_text().strip()
-    except OSError:
-        print("unhealthy: worker has not registered")
+    """Healthy only if the runner loop is alive AND PostgreSQL (the queue authority) is reachable."""
+    if not heartbeat_is_fresh(time.time()):
+        print("unhealthy: no recent runner heartbeat")
         return 1
     try:
         settings = load_settings()
     except SettingsError as exc:
         print(f"unhealthy: {exc}")
         return 1
-    connection = Redis.from_url(
-        str(settings.redis_url),
-        socket_connect_timeout=HEALTHCHECK_TIMEOUT_SECONDS,
-        socket_timeout=HEALTHCHECK_TIMEOUT_SECONDS,
-    )
     try:
-        worker = Worker.find_by_key(Worker.redis_worker_namespace_prefix + name, connection=connection)
-    except Exception as exc:
-        print(f"unhealthy: broker unreachable ({type(exc).__name__})")
-        return 1
-    finally:
-        connection.close()
-    if worker is None or not heartbeat_is_fresh(worker.last_heartbeat, now()):
-        print("unhealthy: no fresh heartbeat")
+        with psycopg.connect(str(settings.database_url), connect_timeout=HEALTHCHECK_TIMEOUT_SECONDS) as conn:
+            conn.execute("SELECT 1")
+    except psycopg.Error as exc:
+        print(f"unhealthy: queue database unreachable ({type(exc).__name__})")
         return 1
     print("healthy")
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

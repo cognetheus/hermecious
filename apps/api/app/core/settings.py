@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     allowed_origins_raw: str = Field(validation_alias="HERMECIOUS_ALLOWED_ORIGINS")
     session_cookie_secure: bool = Field(default=False, validation_alias="HERMECIOUS_SESSION_COOKIE_SECURE")
     session_idle_minutes: int = Field(default=480, ge=5, le=1440, validation_alias="HERMECIOUS_SESSION_IDLE_MINUTES")
+    # Optional wake-up notification for workers; "none" leaves only DB polling (ADR-011).
+    job_notify: Literal["redis", "none"] = Field(default="redis", validation_alias="HERMECIOUS_JOB_NOTIFY")
     session_absolute_minutes: int = Field(
         default=1440, ge=15, le=10080, validation_alias="HERMECIOUS_SESSION_ABSOLUTE_MINUTES"
     )

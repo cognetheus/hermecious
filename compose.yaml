@@ -69,12 +69,15 @@ services:
     <<: *app-service
     build: ./apps/api
     command: ["python", "-m", "app.workers"]
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      # Redis only wakes the worker early; jobs live in Postgres (ADR-011).
+      HERMECIOUS_JOB_NOTIFY: ${HERMECIOUS_JOB_NOTIFY:-redis}
     depends_on:
-      redis:
+      postgres:
         condition: service_healthy
     healthcheck:
-      # Fails unless this worker's own RQ heartbeat in Redis is fresh.
+      # Runner loop heartbeat AND Postgres (the queue authority) reachable; not Redis.
       test: ["CMD", "python", "-m", "app.workers.healthcheck"]
       interval: 10s
       timeout: 5s

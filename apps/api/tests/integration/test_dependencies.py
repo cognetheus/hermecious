@@ -1,11 +1,10 @@
 """API readiness and worker health against the real test Postgres and Redis."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from redis import Redis
-from rq import Worker
 
 from app.core.settings import Settings
 from app.main import close_app, create_app
@@ -20,21 +19,57 @@ def test_ready_with_real_dependencies(settings: Settings) -> None:
     assert response.json() == {"status": "ready", "checks": {"postgres": "ok", "redis": "ok"}}
 
 
-def test_worker_healthcheck_tracks_real_registration(
+def test_worker_health_needs_heartbeat_and_real_database_not_redis(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    name_file = tmp_path / "worker-name"
-    name_file.write_text("hermecious-integration-test")
-    monkeypatch.setattr(worker_module, "NAME_FILE", name_file)
-    connection = Redis.from_url(str(settings.redis_url))
-    rq_worker = Worker(["default"], connection=connection, name="hermecious-integration-test")
+    monkeypatch.setattr(worker_module, "HEARTBEAT_FILE", tmp_path / "heartbeat")
+    assert worker_module.healthcheck() == 1  # no heartbeat yet
+    worker_module.write_heartbeat()
+    assert worker_module.healthcheck() == 0  # real Postgres reachable
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # Redis down must not matter
+    assert worker_module.healthcheck() == 0
 
-    assert worker_module.healthcheck() == 1  # not registered yet
-    rq_worker.register_birth()  # type: ignore[no-untyped-call]  # rq leaves this unannotated
-    try:
-        assert worker_module.healthcheck() == 0
-    finally:
-        rq_worker.register_death()  # type: ignore[no-untyped-call]
-        connection.delete(rq_worker.key)
-        connection.close()
-    assert worker_module.healthcheck() == 1
+
+def test_runner_loop_drains_a_job_heartbeats_and_stops(app_settings: Settings, app: Any) -> None:
+    import threading
+
+    from app.jobs import service as jobs
+    from app.jobs.models import Job
+    from app.jobs.runner import JobRunner, NoSink
+    from tests.integration.auth_helpers import add_organization
+
+    org = add_organization(app)
+    factory = app.state.session_factory
+    with factory() as session:
+        receipt = jobs.enqueue_job(
+            session,
+            organization_id=org,
+            environment="test",
+            job_type="diagnostic.noop",
+            schema_version=1,
+            payload={},
+            idempotency_key="loop-1",
+            clock=app.state.clock,
+        )
+        session.commit()
+    beats: list[int] = []
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        beats.append(1)
+        if len(beats) >= 2:
+            stop.set()
+
+    JobRunner(
+        factory,
+        worker_id="loop-test",
+        environment="test",
+        sink=NoSink(),
+        wake_client=None,
+        heartbeat=heartbeat,
+        poll_seconds=1,
+    ).run_forever(stop)
+    with factory() as session:
+        job = session.get(Job, receipt.job_id)
+        assert job is not None and job.status == "succeeded"
+    assert len(beats) == 2

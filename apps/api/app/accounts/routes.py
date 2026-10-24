@@ -5,12 +5,12 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
-from app.accounts import management, service
+from app.accounts import management, service, snapshots
 from app.accounts.models import Account, ActionAudit, Vertical
 from app.api.dependencies import AppClock
 from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
@@ -290,5 +290,35 @@ def correct_fact(
     return JSONResponse(
         {"id": str(fact.id), "account_id": str(account_id), "supersedes_fact_id": str(fact_id)},
         status_code=201,
+        headers=NO_STORE,
+    )
+
+
+IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", pattern=r"^[A-Za-z0-9._:-]{1,200}$")]
+
+
+@router.post("/{account_id}/snapshots", status_code=202)
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def request_snapshot(
+    account_id: uuid.UUID,
+    request: Request,
+    actor: CurrentActor,
+    db: DbSession,
+    clock: AppClock,
+    idempotency_key: IdempotencyKey,
+) -> JSONResponse:
+    """Enqueue a durable `account.audit_snapshot` job. Exact replays return the same receipt."""
+    receipt = snapshots.request_account_snapshot(
+        db,
+        actor=actor,
+        clock=clock,
+        environment=request.app.state.settings.environment,
+        account_id=account_id,
+        idempotency_key=idempotency_key,
+    )
+    db.commit()
+    return JSONResponse(
+        {"job_id": str(receipt.job_id), "status": receipt.status, "created": receipt.created},
+        status_code=202,
         headers=NO_STORE,
     )

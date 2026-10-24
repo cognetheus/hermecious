@@ -1,43 +1,46 @@
-from datetime import UTC, datetime, timedelta
+"""Worker health (ADR-011): runner heartbeat AND queue database, deliberately not Redis."""
+
+import time
 from pathlib import Path
 
 import pytest
 
 from app.workers import worker
-from app.workers.worker import MAX_HEARTBEAT_AGE, heartbeat_is_fresh
-
-AT = datetime(2026, 10, 23, 7, 0, tzinfo=UTC)
 
 
-def test_recent_heartbeat_is_fresh() -> None:
-    assert heartbeat_is_fresh(AT - timedelta(seconds=5), AT)
-    assert heartbeat_is_fresh(AT - MAX_HEARTBEAT_AGE, AT)
+@pytest.fixture
+def heartbeat_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "heartbeat"
+    monkeypatch.setattr(worker, "HEARTBEAT_FILE", path)
+    return path
 
 
-def test_stale_or_missing_heartbeat_is_not_fresh() -> None:
-    assert not heartbeat_is_fresh(AT - MAX_HEARTBEAT_AGE - timedelta(seconds=1), AT)
-    assert not heartbeat_is_fresh(None, AT)
+def test_fresh_heartbeat_is_fresh(heartbeat_file: Path) -> None:
+    worker.write_heartbeat()
+    assert worker.heartbeat_is_fresh(time.time())
+    assert worker.heartbeat_is_fresh(time.time() + worker.MAX_HEARTBEAT_AGE_SECONDS - 1)
 
 
-def test_unregistered_worker_is_unhealthy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(worker, "NAME_FILE", tmp_path / "absent")
+def test_stale_missing_or_garbage_heartbeat_is_not_fresh(heartbeat_file: Path) -> None:
+    assert not worker.heartbeat_is_fresh(time.time())  # missing
+    worker.write_heartbeat()
+    assert not worker.heartbeat_is_fresh(time.time() + worker.MAX_HEARTBEAT_AGE_SECONDS + 1)
+    heartbeat_file.write_text("not-a-number")
+    assert not worker.heartbeat_is_fresh(time.time())
+
+
+def test_no_heartbeat_is_unhealthy(heartbeat_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert worker.healthcheck() == 1
-    assert "not registered" in capsys.readouterr().out
+    assert "no recent runner heartbeat" in capsys.readouterr().out
 
 
-def test_unreachable_broker_is_unhealthy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_unreachable_queue_database_is_unhealthy(
+    heartbeat_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    name_file = tmp_path / "name"
-    name_file.write_text("hermecious-test")
-    monkeypatch.setattr(worker, "NAME_FILE", name_file)
-    monkeypatch.setattr(worker, "HEALTHCHECK_TIMEOUT_SECONDS", 0.2)
+    worker.write_heartbeat()
     monkeypatch.setenv("HERMECIOUS_ENV", "test")
     monkeypatch.setenv("HERMECIOUS_ALLOWED_ORIGINS", "http://localhost:3000")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x")
-    # Port 1 on loopback refuses connections immediately: Redis is "down".
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x")  # nothing listens on port 1
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")
     assert worker.healthcheck() == 1
-    assert "broker unreachable (ConnectionError)" in capsys.readouterr().out
+    assert "queue database unreachable (OperationalError)" in capsys.readouterr().out

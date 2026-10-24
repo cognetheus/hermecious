@@ -29,7 +29,7 @@ def test_invalid_config_logs_names_only(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(worker_module, "NAME_FILE", tmp_path / "name")
+    monkeypatch.setattr(worker_module, "HEARTBEAT_FILE", tmp_path / "heartbeat")
     monkeypatch.delenv("HERMECIOUS_ENV", raising=False)
     monkeypatch.delenv("HERMECIOUS_ALLOWED_ORIGINS", raising=False)
     monkeypatch.setenv("DATABASE_URL", "mysql://app:db-secret-value@db/app")
