@@ -248,3 +248,20 @@ def test_draft_09_auth_scope_and_privacy(app: FastAPI, client: TestClient, org: 
     assert foreign.post(url, json={"idempotency_key": key()}, headers=mutation_headers(token)).status_code == 404
     body = created["body_text"]
     assert "@" not in body and "000-0000000" not in body and "http" not in body  # no contacts or links
+
+
+def test_audit_archived_account_blocks_new_drafts_and_stales_old_ones(
+    app: FastAPI, client: TestClient, org: Org, operator: str
+) -> None:
+    campaign, account, _offer = approved(app, client, org, operator)
+    created = draft(client, operator, campaign["id"], account).json()
+    owner = TestClient(app, raise_server_exceptions=False)
+    csrf = logged_in(owner, "owner@r.example")
+    version = owner.get(f"/api/v1/accounts/{account}").json()["version"]
+    archived = owner.post(
+        f"/api/v1/accounts/{account}/archive", json={"expected_version": version}, headers=mutation_headers(csrf)
+    )
+    assert archived.status_code == 200, archived.text
+    refused = draft(client, operator, campaign["id"], account)
+    assert refused.status_code == 409 and "account_archived" in refused.json()["error"]["message"]
+    assert "account_archived" in client.get(f"/api/v1/drafts/{created['id']}").json()["stale_reasons"]

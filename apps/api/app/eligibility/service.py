@@ -106,7 +106,7 @@ def decide(
     account = db.scalar(select(Account).where(Account.organization_id == org, Account.id == contact.account_id))
     if account is None:  # pragma: no cover  # composite FK
         raise NotFound()
-    fixtures_allowed = settings.environment != "production" and evaluation.provenance(db, org, account) == "synthetic"
+    fixtures_allowed = settings.environment != "production" and evaluation.fixture_only(db, org, account)
 
     campaign_status: str | None = None
     campaign_blockers: tuple[str, ...] = ()

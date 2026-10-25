@@ -82,10 +82,12 @@ def associated_sources(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> di
     ):  # fmt: skip
         if source_id is not None:
             found.setdefault(source_id, "alias_provenance")
+    successor = aliased(AccountFact)
     for (source_id,) in db.execute(
         select(AccountFact.source_record_id).where(
             AccountFact.organization_id == org, AccountFact.account_id == account_id,
             AccountFact.source_record_id.is_not(None),
+            ~exists().where(successor.organization_id == org, successor.supersedes_fact_id == AccountFact.id),
         )
     ):  # fmt: skip
         if source_id is not None:
@@ -191,8 +193,12 @@ def create_run(
 
 
 def _lock_run(db: Session, org: uuid.UUID, run_id: uuid.UUID) -> ResearchRun | None:
+    """Lock and reload: sessions keep objects after commit, so a concurrent cancel must not be read stale."""
     return db.scalar(
-        select(ResearchRun).where(ResearchRun.organization_id == org, ResearchRun.id == run_id).with_for_update()
+        select(ResearchRun)
+        .where(ResearchRun.organization_id == org, ResearchRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
@@ -215,6 +221,8 @@ def cancel_run(db: Session, *, actor: Actor, clock: Clock, run_id: uuid.UUID) ->
             ),
             {"now": now, "org": actor.organization_id, "job": run.job_id},
         )
+    elif job_service.worker_gone(db, actor.organization_id, run.job_id):  # orphaned: no worker will finish it
+        run.status, run.finished_at, run.partial_reason = "cancelled", now, "worker_lost"
     run.version += 1
     run.updated_at = now
     management._audit(db, actor, clock, "research.run_cancel_requested", run.account_id,
@@ -243,8 +251,10 @@ def handle_research_job(db: Session, ctx: job_registry.JobContext, payload: Any)
         raise job_registry.PermanentJobError("run_not_found")
     if run.status in RESEARCH_TERMINAL:
         return {"run_id": str(run.id), "run_status": run.status, "skipped": True}
-    if run.requested_cancel_at is not None:
-        return _finish(run, "cancelled", ctx.now, partial_reason="cancelled_before_start")
+    if run.requested_cancel_at is not None:  # a retry after a mid-run cancel keeps what was already proposed
+        proposed = _proposed(db, org, run_id)
+        return _finish(run, "cancelled", ctx.now, claims_proposed=proposed,
+                       partial_reason="cancelled" if run.started_at else "cancelled_before_start")  # fmt: skip
     run.status, run.started_at, run.updated_at = "running", run.started_at or ctx.now, ctx.now
     run.version += 1
     db.commit()
@@ -329,8 +339,7 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID) -> di
     run = _lock_required(db, org, run_id)
     if run.status != "running":
         return {"run_id": str(run_id), "run_status": run.status, "skipped": True}
-    proposed = int(db.scalar(text("SELECT count(*) FROM research_claims WHERE organization_id = :o AND run_id = :r"),
-                             {"o": org, "r": run_id}) or 0)  # fmt: skip
+    proposed = _proposed(db, org, run_id)
     if stopped == "cancelled" or run.requested_cancel_at is not None:
         status, partial = "cancelled", "cancelled"
     elif stopped is not None:
@@ -348,6 +357,11 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID) -> di
         usage_json={"seconds": round(MONOTONIC() - started, 3), "chars": budget.max_chars - chars_left,
                     "abstained": dict(sorted(abstained.items())), "failures": failures},
     )  # fmt: skip
+
+
+def _proposed(db: Session, org: uuid.UUID, run_id: uuid.UUID) -> int:
+    return int(db.scalar(text("SELECT count(*) FROM research_claims WHERE organization_id = :o AND run_id = :r"),
+                         {"o": org, "r": run_id}) or 0)  # fmt: skip
 
 
 def _lock_required(db: Session, org: uuid.UUID, run_id: uuid.UUID) -> ResearchRun:
@@ -390,7 +404,7 @@ def _store_claim(
                 storage_class=source.permitted_storage_class, language=doc.language, locator_start=proposal.start,
                 locator_end=proposal.end, span_sha256=hashlib.sha256(span.encode("utf-8")).hexdigest(),
                 excerpt=excerpt, status="proposed", version=1, created_at=now)
-        .on_conflict_do_nothing(constraint="uq_research_claims_span")
+        .on_conflict_do_nothing(constraint="uq_research_claims_span_rule")  # one claim per rule and span
         .returning(ResearchClaim.id)
     )  # fmt: skip
     return inserted is not None
@@ -433,6 +447,8 @@ def review_claim(
     )
     if claim is None:
         raise NotFound()
+    if claim.review_key == idempotency_key:  # an identical review committed while we waited for the lock
+        return ReviewResult(claim, claim.fact_id, True)
     if claim.version != expected_version:
         raise Conflict("this claim changed since you loaded it; reload and review again")
     if claim.status != "proposed":
@@ -443,6 +459,8 @@ def review_claim(
         source = db.scalar(select(SourceRecord).where(SourceRecord.organization_id == org,
                                                       SourceRecord.id == claim.source_record_id))  # fmt: skip
         refusal = ineligibility(source, environment, now) if source else "source_not_found"
+        if refusal is None and claim.source_record_id not in associated_sources(db, org, claim.account_id):
+            refusal = "source_not_associated_with_account"  # e.g. the listing link was undone as another campus
         if refusal is not None:
             raise Conflict(f"cannot accept: {refusal}")
         account = _account(db, org, claim.account_id)
@@ -534,11 +552,17 @@ def run_detail(db: Session, run: ResearchRun, environment: str, now: datetime) -
                                                          ResearchClaim.run_id == run.id)
                              .order_by(ResearchClaim.source_record_id, ResearchClaim.locator_start)))  # fmt: skip
 
+    associated = associated_sources(db, org, run.account_id)
+
+    def refusal_for(source: SourceRecord) -> str | None:  # rechecked at render time, including association
+        refusal = ineligibility(source, environment, now)
+        return refusal or (None if source.id in associated else "source_not_associated_with_account")
+
     def source_view(source_id: uuid.UUID) -> dict[str, Any]:
         source = sources.get(source_id)
         if source is None:
             return {"id": str(source_id)}
-        refusal = ineligibility(source, environment, now)
+        refusal = refusal_for(source)
         url = source.source_url if refusal != "source_rights_not_permitted" else None
         return {"id": str(source.id), "provider": source.provider, "source_url": url,
                 "storage_class": source.permitted_storage_class, "rights_policy_version": source.rights_policy_version,
@@ -547,7 +571,7 @@ def run_detail(db: Session, run: ResearchRun, environment: str, now: datetime) -
 
     def claim_view(claim: ResearchClaim) -> dict[str, Any]:
         source = sources.get(claim.source_record_id)
-        refusal = ineligibility(source, environment, now) if source else "source_not_found"
+        refusal = refusal_for(source) if source else "source_not_found"
         withheld = claim.excerpt is not None and refusal is not None
         return {
             "id": str(claim.id), "status": claim.status, "version": claim.version, "claim_type": claim.claim_type,

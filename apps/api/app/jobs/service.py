@@ -17,7 +17,7 @@ from app.core.clock import Clock
 from app.core.errors import Conflict, InvalidRequest
 from app.core.request_context import current_request_id
 from app.jobs import registry
-from app.jobs.models import Job, JobStatus, OutboxEvent
+from app.jobs.models import TERMINAL, Job, JobStatus, OutboxEvent
 
 IDEMPOTENCY_CONFLICT = "Idempotency key was already used with a different payload or schema version"
 
@@ -139,3 +139,15 @@ def enqueue_job(
     if existing.payload_digest != payload_digest or existing.job_schema_version != schema_version:
         raise Conflict(IDEMPOTENCY_CONFLICT)
     return JobReceipt(job_id=existing.id, status=existing.status, created=False)
+
+
+def worker_gone(db: Session, organization_id: uuid.UUID, job_id: uuid.UUID | None) -> bool:
+    """True when a run's job can no longer execute its handler (finished, cancelled or dead-lettered).
+
+    The runner dead-letters a job whose last lease expired without calling the handler, so a run row can be left
+    `running` with no worker. Callers use this to finish such orphaned runs instead of waiting forever.
+    """
+    if job_id is None:
+        return False
+    status = db.scalar(select(Job.status).where(Job.organization_id == organization_id, Job.id == job_id))
+    return status is None or status in TERMINAL

@@ -68,11 +68,11 @@ def offer_is_current(db: Session, campaign: Campaign) -> bool:
     )
 
 
-def gate_blocker(db: Session, campaign: Campaign, environment: str) -> str | None:
+def gate_blocker(db: Session, campaign: Campaign, environment: str, now: datetime) -> str | None:
     """Why approvals/activation are blocked by evidence quality or mode (None = allowed)."""
     if campaign.mode == "fixture":
         return "fixture_campaigns_are_test_only_in_production" if environment == "production" else None
-    gate = evaluation.gate(db, campaign.organization_id)
+    gate = evaluation.gate(db, campaign.organization_id, now)
     return None if gate["enrollment_allowed"] else f"evidence_quality_gate_closed: {gate['reason']}"
 
 
@@ -219,7 +219,7 @@ def transition(
     if action == "activate":
         if campaign.mode == "fixture":
             raise Conflict("fixture campaigns stay in draft: they are test-only and never active")
-        blocker = gate_blocker(db, campaign, environment)
+        blocker = gate_blocker(db, campaign, environment, clock.now())
         if blocker:
             raise Conflict(f"cannot activate: {blocker}")
         if not offer_is_current(db, campaign):
@@ -339,7 +339,7 @@ def preview(
     if expected_digest is not None and expected_digest != digest:
         raise Conflict("the preview changed; reload it from the start")
     page = rows[cursor : cursor + limit]
-    blocker = gate_blocker(db, campaign, environment)
+    blocker = gate_blocker(db, campaign, environment, now)
     return {
         "campaign_id": str(campaign.id),
         "revision": campaign.revision,
@@ -435,7 +435,7 @@ def approve(
         raise Conflict(f"cannot approve while the campaign is {campaign.status}")
     if campaign.revision != expected_revision:
         raise Conflict("the campaign changed since you loaded it; reload the preview")
-    blocker = gate_blocker(db, campaign, environment)
+    blocker = gate_blocker(db, campaign, environment, clock.now())
     if blocker:
         raise Conflict(f"cannot approve: {blocker}")
     if not offer_is_current(db, campaign):
@@ -499,6 +499,10 @@ def approve(
             "account_id": str(account_id),
             "assessment_id": candidate.assessment["id"],
             "mode": campaign.mode,
+            # The quality-gate state this approval relied on (fixtures bypass it outside production).
+            "quality_gate": (
+                "fixture_test_only" if campaign.mode == "fixture" else evaluation.gate(db, org, now).get("run_id")
+            ),
             "contact_authorized": False,
         },
         target_type="campaign",
@@ -609,6 +613,8 @@ def view(db: Session, campaign: Campaign, now: datetime, environment: str) -> di
         if members
         else {}
     )
+    # Drafting also needs an open campaign and an open gate (or a non-production fixture), as P4.2 re-checks.
+    open_for_drafting = campaign.status in ("draft", "active") and gate_blocker(db, campaign, environment, now) is None
     out_members = []
     for m in members:
         stale: list[str] = []
@@ -639,7 +645,7 @@ def view(db: Session, campaign: Campaign, now: datetime, environment: str) -> di
                 "version": m.version,
                 "decided_at": m.decided_at.isoformat(),
                 "stale": stale,
-                "drafting_blocked": m.stage != "approved_for_drafting" or bool(stale),
+                "drafting_blocked": m.stage != "approved_for_drafting" or bool(stale) or not open_for_drafting,
             }
         )
     usage = {
@@ -669,7 +675,7 @@ def view(db: Session, campaign: Campaign, now: datetime, environment: str) -> di
         "budgets": campaign.budgets_json,
         "usage": usage,
         "members": out_members,
-        "approval_blocked_reason": gate_blocker(db, campaign, environment),
+        "approval_blocked_reason": gate_blocker(db, campaign, environment, now),
         "notice": NO_CONTACT_NOTICE,
         "contact_authorized": False,
         "created_at": campaign.created_at.isoformat(),

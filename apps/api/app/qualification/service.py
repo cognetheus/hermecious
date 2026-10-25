@@ -149,6 +149,8 @@ def override(
     hard = [f for f in facts if f.claim_type == "hard_disqualifier" and signal_rubric.eligibility(f, now) == "usable"]
     if hard and changes.get("decision", latest.decision) != "exclude":
         raise Conflict("a cited hard disqualifier is recorded; this account must stay excluded")
+    if changes.get("delivery_fit") == "strong" and latest.offer_revision_id is None:
+        raise Conflict("delivery fit cannot be strong without a published offer revision")
     known = {f.fact_id for f in facts}
     if any(str(i) not in known for i in evidence_fact_ids):
         raise InvalidRequest("evidence must be current facts of this account")

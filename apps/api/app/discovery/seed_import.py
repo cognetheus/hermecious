@@ -201,7 +201,7 @@ def import_seed_csv(
                 vertical_slug="schools",
                 locality=locality,
                 observed_at=now,
-                attribution=f"Operator seed: {label}"[:300],
+                attribution=f"Operator seed: {label}; reference: {reference}"[:300],  # kept as plain text
             )
         except ValueError as exc:  # pydantic's ValidationError is a ValueError too
             code = str(exc) if str(exc) in _ROW_CODES else "invalid_row"

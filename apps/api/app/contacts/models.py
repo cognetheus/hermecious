@@ -118,6 +118,7 @@ class ContactPermission(Base):
     proof_kind: Mapped[str] = mapped_column(String(32))
     proof_key_id: Mapped[str] = mapped_column(String(16))
     proof_digest: Mapped[str] = mapped_column(String(64))
+    proof_hint: Mapped[str] = mapped_column(String(16), server_default="")  # e.g. "•••0001", for the reviewer
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

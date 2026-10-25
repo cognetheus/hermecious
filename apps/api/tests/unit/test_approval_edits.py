@@ -6,7 +6,9 @@ from app.drafts import composer
 from app.drafts.composer import DraftError
 from tests.unit.test_draft_composer import CLAIMS, compose, fact
 
-FACTS = [fact("f1", "public_workflow_signal", {"area": "fees", "signal": "x"})]
+FACTS = [
+    fact("f1", "public_workflow_signal", {"area": "fees", "signal": "fee voucher or bank challan process described"})
+]
 QUESTIONS = [("operator_autonomy", "Who usually decides on new administration tools for this campus?")]
 
 

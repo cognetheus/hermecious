@@ -23,7 +23,7 @@ from typing import Any
 
 from app.accounts import claims, policy
 
-EXTRACTOR_VERSION = "rules-1.0"
+EXTRACTOR_VERSION = "rules-1.1"  # 1.1: "online admission form" only when "online" qualifies the admission
 MAX_CLAIMS_PER_RUN = 25
 MAX_SPAN = 1000
 
@@ -64,7 +64,14 @@ def _number(token: str) -> int | None:
 def _admissions_en(s: str) -> tuple[str, dict[str, Any]] | None:
     low = s.casefold()
     if re.search(r"\badmissions?\b", low) and re.search(r"\b(open|apply|application|admission form|register)\b", low):
-        online = bool(re.search(r"\bonline\b", low))
+        # "online" must qualify the admission itself, not something else in the sentence (e.g. results).
+        online = bool(
+            re.search(
+                r"\b(apply|admissions?|application|form)\b\W+(\w+\W+){0,3}online\b|"
+                r"\bonline\W+(\w+\W+){0,2}(admissions?|application|form)\b",
+                low,
+            )
+        )
         return "public_workflow_signal", {"area": "admissions",
                                           "signal": "online admission form mentioned" if online
                                           else "admissions process announced"}  # fmt: skip

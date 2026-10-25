@@ -101,8 +101,20 @@ def stage_candidate(
         )
         .with_for_update()
     )
-    if row is None or row.payload_digest == digest:
-        return "unchanged"  # identical content: no timestamp refresh, no audit noise
+    if row is None:
+        return "unchanged"
+    if row.payload_digest == digest:
+        # Identical content: no revision and no audit noise, but a newer permitted observation renews the rights
+        # window (otherwise a listing could never be admitted once its first observation expired).
+        if candidate.observed_at > row.observed_at:
+            row.observed_at, row.upstream_timestamp = candidate.observed_at, candidate.upstream_timestamp
+            row.rights_policy_version, row.attribution, row.expires_at = (
+                rights_policy_version,
+                candidate.attribution,
+                expires_at,
+            )
+            row.updated_at = now
+        return "unchanged"
     previous = row.payload_digest
     before = {k: (str(v) if v is not None else None) for k, v in _snapshot(row).items()}
     for name, value in {**fields, **provenance}.items():

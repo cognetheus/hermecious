@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.accounts import management
 from app.accounts import service as account_service
-from app.accounts.models import Account, SourceRecord
+from app.accounts.models import Account, AccountStatus, SourceRecord
 from app.auth.dependencies import Capability
 from app.auth.service import Actor
 from app.campaigns import rules as campaign_rules
@@ -68,9 +68,11 @@ def blockers(
 ) -> list[str]:
     """Everything that forbids a new draft (or makes an existing one stale). Empty = allowed."""
     reasons: list[str] = []
+    if account.status == AccountStatus.EXCLUDED:
+        reasons.append("account_archived")
     if campaign.status not in ("draft", "active"):
         reasons.append(f"campaign_{campaign.status}")
-    gate = campaign_service.gate_blocker(db, campaign, environment)
+    gate = campaign_service.gate_blocker(db, campaign, environment, now)
     if gate:
         reasons.append(gate.split(":", 1)[0])
     if member is None:

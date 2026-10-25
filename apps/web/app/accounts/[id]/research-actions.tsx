@@ -37,7 +37,7 @@ function useRun() {
 export function StartResearch({ accountId, sources }: { accountId: string; sources: ResearchSource[] }) {
   const { message, pending, run } = useRun();
   const [selected, setSelected] = useState<string[]>([]);
-  const key = useMemo(() => newKey("research"), []);
+  const [key, setKey] = useState(() => newKey("research")); // stable for retries; fresh once a run is created
   const eligible = sources.filter((s) => s.eligible);
   return (
     <form
@@ -45,7 +45,11 @@ export function StartResearch({ accountId, sources }: { accountId: string; sourc
       onSubmit={(event) => {
         event.preventDefault();
         run(
-          () => postJson(`/api/v1/accounts/${accountId}/research-runs`, { source_record_ids: selected, idempotency_key: key }),
+          async () => {
+            const result = await postJson(`/api/v1/accounts/${accountId}/research-runs`, { source_record_ids: selected, idempotency_key: key });
+            if (result.ok) setKey(newKey("research"));
+            return result;
+          },
           "Research queued",
         );
       }}

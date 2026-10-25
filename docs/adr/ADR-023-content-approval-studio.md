@@ -1,6 +1,6 @@
 # ADR-023: Content approval is an append-only, simulation-only receipt bound to one exact revision, re-validated on every read
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P4.4_PROMPT.md`; blueprint §4 P4.4 ("expire approval on material change"). Batch 07 is absent from the repository.
 

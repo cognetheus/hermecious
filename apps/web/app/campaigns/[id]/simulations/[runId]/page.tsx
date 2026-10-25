@@ -37,6 +37,10 @@ export default async function DryRunReport({ params }: { params: Promise<{ id: s
         {karachiTime(run.evaluated_at)} · {run.policy_version} · {run.simulator_version}
         {run.report_digest ? ` · report digest ${run.report_digest.slice(0, 12)}` : ""}
       </p>
+      <p>
+        Started {karachiTime(run.started_at)} · finished {karachiTime(run.finished_at)}
+        {run.error_code ? ` · error: ${run.error_code}` : ""}
+      </p>
       {active && me.role !== "observer" ? <CancelRun campaignId={id} runId={runId} /> : null}
       {report ? (
         <section aria-labelledby="summary">
@@ -77,6 +81,7 @@ export default async function DryRunReport({ params }: { params: Promise<{ id: s
             <th scope="col">Decision</th>
             <th scope="col">Why</th>
             <th scope="col">Simulated lifecycle</th>
+            <th scope="col">State used</th>
           </tr>
         </thead>
         <tbody>
@@ -93,6 +98,11 @@ export default async function DryRunReport({ params }: { params: Promise<{ id: s
                 {i.lifecycle.replaceAll("_", " ")}
                 {i.sim_receipt_id ? ` (${i.sim_receipt_id})` : ""}
                 {i.attempts > 1 ? `, ${i.attempts} attempts` : ""}
+              </td>
+              <td>
+                {i.draft_revision ? `draft revision ${i.draft_revision}` : "no draft"}
+                {i.approval_id ? `; approval ${i.approval_id.slice(0, 8)}` : ""}
+                {i.permission_revision ? `; permission v${i.permission_revision.version}` : ""}
               </td>
             </tr>
           ))}

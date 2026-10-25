@@ -1,6 +1,6 @@
 # ADR-017: School operations brief is a pinned, pure rubric over current cited facts, stored as immutable snapshots
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P3.2_PROMPT.md`; blueprint §4 P3.2. Batch 05 is absent from the repository (see the ledger).
 

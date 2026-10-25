@@ -29,6 +29,7 @@ from app.contacts import addresses
 from app.contacts.models import Contact, ContactCommand, ContactPermission, SuppressionEntry
 from app.core.clock import Clock
 from app.core.errors import Conflict, DependencyUnavailable, Forbidden, NotFound, Unprocessable
+from app.core.logging import scrub_text
 from app.core.settings import Settings
 from app.eligibility import policy
 
@@ -67,17 +68,17 @@ def _command(
     org = actor.organization_id
     if (prior := _replay(db, org, key, digest)) is not None:
         return prior, False
-    outcome = run()
-    db.add(
-        ContactCommand(
-            organization_id=org,
-            idempotency_key=key,
-            request_digest=digest,
-            outcome_json=outcome,
-            created_at=clock.now(),
+    try:  # `run` may flush: a concurrent duplicate surfaces there or at commit, never as a 500
+        outcome = run()
+        db.add(
+            ContactCommand(
+                organization_id=org,
+                idempotency_key=key,
+                request_digest=digest,
+                outcome_json=outcome,
+                created_at=clock.now(),
+            )
         )
-    )
-    try:
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -155,7 +156,12 @@ def _permission_view(p: ContactPermission, people: dict[uuid.UUID, str], full: b
         "basis": p.basis,
         "capture_method": p.capture_method,
         "consent_wording_version": p.consent_wording_version,
-        "proof": {"kind": p.proof_kind, "reference": "kept only as a keyed digest", "key_id": p.proof_key_id},
+        "proof": {
+            "kind": p.proof_kind,
+            "hint": p.proof_hint,
+            "reference": "kept only as a keyed digest",
+            "key_id": p.proof_key_id,
+        },
         "captured_at": p.captured_at.isoformat(),
         "recorded_at": p.recorded_at.isoformat(),
         "recorded_by": people.get(p.recorded_by),
@@ -363,6 +369,7 @@ def record_permission(
             proof_kind=proof_kind,
             proof_key_id=key_id,
             proof_digest=proof,
+            proof_hint="•••" + "".join(proof_reference.split())[-4:],
             captured_at=captured_at,
             recorded_at=now,
             expires_at=captured_at + policy.PROOF_MAX_AGE,
@@ -424,7 +431,7 @@ def review_permission(
     """Owner-only. `verified` re-checks the evidence now; the reviewer must not be the person who recorded it."""
     account_service._require(actor, Capability.ADMINISTER)
     org = actor.organization_id
-    reason = " ".join(reason.split())
+    reason = scrub_text(" ".join(reason.split()))  # free text: never keep a number or email in review history
     request = _digest("review", str(contact_id), str(permission_id), decision, reason, expected_version)
 
     def run() -> dict[str, Any]:
@@ -487,7 +494,7 @@ def revoke_permission(
 ) -> tuple[dict[str, Any], bool]:
     account_service._require(actor, Capability.MUTATE)
     org = actor.organization_id
-    reason = " ".join(reason.split())
+    reason = scrub_text(" ".join(reason.split()))  # free text: never keep a number or email in review history
     request = _digest("revoke", str(contact_id), str(permission_id), reason, expected_version)
 
     def run() -> dict[str, Any]:

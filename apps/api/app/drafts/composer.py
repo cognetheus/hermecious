@@ -65,9 +65,10 @@ def _observation(fact: EvidenceFact) -> str | None:
             if v.get("signal") == "online admission form mentioned":
                 return "We noticed that your public page mentions an online admission form."
             return "We noticed that your public page describes your admissions process."
-        if v.get("area") == "fees":
+        # Fixed sentences only for the exact signals they restate; any other wording is not observed.
+        if v.get("area") == "fees" and v.get("signal") == "fee voucher or bank challan process described":
             return "We noticed that your public page explains how fee vouchers or bank challans are paid."
-        if v.get("area") == "reporting":
+        if v.get("area") == "reporting" and v.get("signal") == "results published online":
             return "We noticed that your school shares results online."
     if fact.claim_type == "campus_count" and isinstance(v.get("count"), int) and v["count"] >= 2:
         return f"We noticed that your school lists {v['count']} campuses."
@@ -245,9 +246,15 @@ _FORBIDDEN = [
     (re.compile(r"(?i)https?://|www\.|\.com\b|\.pk\b"), "link"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "email_address"),
     (re.compile(r"\+?\d[\d\s-]{6,}\d"), "phone_number"),
-    (re.compile(r"(?i)\b(rs\.?|pkr|price|cost|discount|\d+\s*%|free trial|offer ends)\b"), "price_or_discount"),
     (
-        re.compile(r"(?i)\b(guarantee\w*|within \d+|in \d+ (days|weeks)|go[- ]live|by (monday|next week))\b"),
+        re.compile(r"(?i)\b(rs\.?|pkr|rupees?|price|cost|discount|free trial|offer ends)\b|\d+\s*%"),
+        "price_or_discount",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(guarantee\w*|within \d+|in \d+ (days?|weeks?|months?)|go[- ]live|live by|"
+            r"by (monday|next week|next month)|next month)\b"
+        ),
         "commitment",
     ),
     (

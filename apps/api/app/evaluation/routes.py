@@ -13,7 +13,7 @@ from app.api.dependencies import AppClock, AppSettings
 from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
 from app.auth.models import Role
 from app.evaluation import service
-from app.evaluation.models import EvidenceEvalRun, EvidenceEvalVerdict
+from app.evaluation.models import EvidenceEvalItem, EvidenceEvalRun, EvidenceEvalVerdict
 from app.persistence.db import DbSession
 
 router = APIRouter(prefix="/api/v1/evidence-evals", tags=["evaluation"], dependencies=[Depends(authorize_request)])
@@ -52,8 +52,8 @@ class FinalizeBody(BaseModel):
 
 
 @router.get("/gate")
-def quality_gate(actor: CurrentActor, db: DbSession) -> JSONResponse:
-    return JSONResponse(service.gate(db, actor.organization_id), headers=NO_STORE)
+def quality_gate(actor: CurrentActor, db: DbSession, clock: AppClock) -> JSONResponse:
+    return JSONResponse(service.gate(db, actor.organization_id, clock.now()), headers=NO_STORE)
 
 
 @router.post("", status_code=201)
@@ -101,7 +101,10 @@ def report(run_id: uuid.UUID, actor: CurrentActor, db: DbSession) -> JSONRespons
     history: dict[str, list[dict[str, object]]] = {}
     for v in db.scalars(
         select(EvidenceEvalVerdict)
-        .where(EvidenceEvalVerdict.organization_id == actor.organization_id)
+        .where(
+            EvidenceEvalVerdict.organization_id == actor.organization_id,
+            EvidenceEvalVerdict.item_id.in_(select(EvidenceEvalItem.id).where(EvidenceEvalItem.run_id == run.id)),
+        )
         .order_by(EvidenceEvalVerdict.revision)
     ):
         history.setdefault(str(v.item_id), []).append(

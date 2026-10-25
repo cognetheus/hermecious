@@ -6,9 +6,10 @@ hypothesis with `unknown` confidence, never a source-supported finding.
 Contact details are not facts (contacts and consent are a separate model).
 """
 
+from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
 from app.accounts.policy import PolicyViolation
 
@@ -92,6 +93,12 @@ class ReviewDeferral(_Claim):
 
     reason: Literal["asked_to_reconnect_later", "contract_in_place", "budget_cycle", "term_in_progress"]
     until: Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+
+    @field_validator("until")
+    @classmethod
+    def _real_date(cls, value: str) -> str:
+        date.fromisoformat(value)  # rejects impossible dates such as 2026-02-30
+        return value
 
 
 CLAIMS: dict[str, type[_Claim]] = {

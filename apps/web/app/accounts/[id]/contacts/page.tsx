@@ -68,7 +68,7 @@ export default async function ContactsPage({ params }: { params: Promise<{ id: s
                   </td>
                   <td>
                     {p.capture_method
-                      ? `${p.capture_method.replaceAll("_", " ")}; ${p.consent_wording_version}; ${p.business_name}; proof ${p.proof?.kind} (${p.proof?.reference}); captured ${karachiTime(p.captured_at ?? null)}`
+                      ? `${p.capture_method.replaceAll("_", " ")}; ${p.consent_wording_version}; ${p.business_name}; proof ${p.proof?.kind} ${p.proof?.hint ?? ""} (${p.proof?.reference}); captured ${karachiTime(p.captured_at ?? null)}`
                       : "restricted"}
                   </td>
                   <td>{p.recorded_at ? `${karachiTime(p.recorded_at)} by ${p.recorded_by ?? "unknown"}` : "restricted"}</td>

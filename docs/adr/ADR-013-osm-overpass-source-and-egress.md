@@ -1,6 +1,6 @@
 # ADR-013: First live source is OpenStreetMap via Overpass, behind one pinned egress client; CSV seeds are the fallback
 
-- **Status:** Accepted for implementation. **Live activation is the owner's decision** and is not made by this ADR.
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (AGENTS.md). **Live activation is the owner's decision** and is not made by this ADR.
 - **Date:** 2026-10-24
 - **Source:** Batch 04 §P2.2 and §5.1; `OPUS_P2.2_PROMPT.md`; ADR-012
 
@@ -126,7 +126,7 @@ The only query is a fixed template with validated numbers:
 - origin, attribution, rights version, `expires_at` and `expired`;
 - `location_precision`.
 
-**There is no HTTP endpoint that starts a live run.**
+**At the time of this ADR there was no HTTP endpoint that started a live run.** P2.4 (ADR-015) later added `POST /api/v1/discovery/runs`, which uses the same source policy checks.
 
 ## Alternatives rejected
 

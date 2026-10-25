@@ -507,3 +507,68 @@ def test_sim_07_cancel_requested_mid_run_stops_remaining_items(
     run = world.execute()
     assert run["status"] == "cancelled" and run["considered"] == len(run["items"]) == 1
     assert run["report"]["considered"] == 1 and run["report"]["reconciled"] is True
+
+
+# --- Audit follow-ups (2026-10-25) --------------------------------------------------------------------------------
+
+
+def test_audit_orphaned_run_is_reconciled_and_never_blocks_the_campaign(
+    app: FastAPI, client: TestClient, world: World
+) -> None:
+    stuck = world.run().json()
+    with db(app) as session:  # its worker died on the last attempt: the runner dead-lettered the job
+        session.execute(text("UPDATE simulation_runs SET status = 'running' WHERE id = :r"), {"r": stuck["id"]})
+        session.execute(
+            text(
+                "UPDATE jobs SET status = 'dead', finished_at = now(), last_error_class = 'lease_expired'"
+                " WHERE job_type = 'simulation.run'"
+            )
+        )
+        session.commit()
+    fresh = world.run()
+    assert fresh.status_code == 201, fresh.text  # not 409 "already active"
+    assert world.detail(stuck["id"])["status"] == "failed" and world.detail(stuck["id"])["error_code"] == "worker_lost"
+
+
+def test_audit_retry_uses_the_frozen_pool(app: FastAPI, client: TestClient, world: World, clock: FixedClock) -> None:
+    for n in range(2):
+        plain_account(app, world.org, f"Pool School {n} (Synthetic)")
+    started = world.run("worker_restart_mock").json()
+    assert [o.status for o in worker(app).run_once()] == ["retry_wait"]
+    plain_account(app, world.org, "Late School (Synthetic)")  # appears between attempts
+    clock.advance(timedelta(minutes=5))
+    assert [o.status for o in worker(app).run_once()] == ["succeeded"]
+    finished = world.detail(started["id"])
+    assert finished["status"] == "completed" and finished["considered"] == 3
+    assert "Late School (Synthetic)" not in {i["account"] for i in finished["items"]}
+
+
+def test_audit_kill_switch_flipped_mid_run_applies_to_the_next_item(
+    app: FastAPI, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.second()
+    real_item = sim_service._item
+    calls: list[int] = []
+
+    def item_then_kill(*args: Any) -> Any:
+        result = real_item(*args)
+        calls.append(1)
+        if len(calls) == 1:
+            monkeypatch.setenv("HERMECIOUS_OUTREACH_KILL_SWITCH", "true")
+        return result
+
+    monkeypatch.setattr(sim_service, "_item", item_then_kill)
+    run = world.execute()
+    second = run["items"][1]
+    assert second["bucket"] == "denied" and any("kill_switch_engaged" in r for r in second["reasons"])
+
+
+def test_audit_scenarios_are_refused_for_readiness_runs(client: TestClient, world: World) -> None:
+    live = new_campaign(client, world.operator, world.offer, mode="live", name="Live readiness").json()
+    url = f"/api/v1/campaigns/{live['id']}/simulations"
+    refused = client.post(
+        url, json={"scenario": "quota", "idempotency_key": key()}, headers=mutation_headers(world.operator)
+    )
+    assert refused.status_code == 400
+    plain = client.post(url, json={"idempotency_key": key()}, headers=mutation_headers(world.operator))
+    assert plain.status_code == 201 and plain.json()["mode"] == "readiness"

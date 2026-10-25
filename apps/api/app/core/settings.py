@@ -5,7 +5,7 @@ missing or invalid value stops startup. Errors name the offending settings but
 never echo their values, and the settings repr masks every URL.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -87,6 +87,8 @@ class Settings(BaseSettings):
             if not self.osm_rights_reviewed_by or self.osm_rights_reviewed_at is None:
                 raise ValueError("HERMECIOUS_OSM_REVIEWED_BY")
             if self.osm_rights_reviewed_at.tzinfo is None:
+                raise ValueError("HERMECIOUS_OSM_REVIEWED_AT")
+            if self.osm_rights_reviewed_at > datetime.now(UTC):  # a future review date would never expire
                 raise ValueError("HERMECIOUS_OSM_REVIEWED_AT")
             if not self.osm_bbox_citation:
                 raise ValueError("HERMECIOUS_OSM_BBOX_CITATION")

@@ -501,7 +501,10 @@ def test_live_07_csv_checksum_replay_creates_nothing_new(app: FastAPI) -> None:
     assert len(audits(app, "discovery.seed_import")) == 1
     urdu = rows(app, DiscoveryCandidate, display_name="لاہور مصنوعی اسکول ٹیسٹ")[0]
     assert (urdu.city, urdu.source_record_id, urdu.provider) == ("Lahore", None, "operator_seed_csv")
-    assert urdu.attribution == "Operator seed: Owner printed directory 2026" and urdu.source_import_id is not None
+    assert (
+        urdu.attribution == "Operator seed: Owner printed directory 2026; reference: Owner directory p.13"
+        and urdu.source_import_id is not None
+    )
 
 
 def test_live_07_concurrent_identical_imports_record_once(app: FastAPI) -> None:

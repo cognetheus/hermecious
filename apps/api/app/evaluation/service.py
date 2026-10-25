@@ -28,7 +28,7 @@ intact.
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import exists, func, select
@@ -75,20 +75,27 @@ def _current_facts(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> list[t
     return [(f, s) for f, s in rows]
 
 
+def _providers(db: Session, org: uuid.UUID, account: Account) -> set[str]:
+    source_ids = set(associated_sources(db, org, account.id))
+    if not source_ids:
+        return set()
+    return set(
+        db.scalars(
+            select(SourceRecord.provider).where(SourceRecord.organization_id == org, SourceRecord.id.in_(source_ids))
+        )
+    )
+
+
+def fixture_only(db: Session, org: uuid.UUID, account: Account) -> bool:
+    """Every source is a synthetic fixture. Unlike `provenance`, a name containing "(Synthetic)" is not enough:
+    renaming a real account must never let fixture consent or templates apply to it."""
+    providers = _providers(db, org, account)
+    return bool(providers) and providers <= SYNTHETIC_PROVIDERS
+
+
 def provenance(db: Session, org: uuid.UUID, account: Account) -> str:
     """`real`, `synthetic` or `unsourced`: only accounts with real, non-fixture sources count toward the gate."""
-    source_ids = set(associated_sources(db, org, account.id))
-    providers = (
-        set(
-            db.scalars(
-                select(SourceRecord.provider).where(
-                    SourceRecord.organization_id == org, SourceRecord.id.in_(source_ids)
-                )
-            )
-        )
-        if source_ids
-        else set()
-    )
+    providers = _providers(db, org, account)
     if "(synthetic)" in account.canonical_name.casefold() or providers & SYNTHETIC_PROVIDERS:
         return "synthetic"
     return "real" if providers else "unsourced"
@@ -184,6 +191,8 @@ def displayed_claims(db: Session, org: uuid.UUID, account_id: uuid.UUID, now: da
                 continue
             explanation = assessment.explanation_json["dimensions"][dim]
             ids = explanation.get("fact_ids", [])
+            if dim == "delivery_fit" and not ids:
+                continue  # judged against the published offer, not school evidence: nothing to audit here
             items.append(
                 {
                     "item_kind": "dimension",
@@ -240,8 +249,11 @@ def create_run(
         )
     )
     if prior is not None:
-        same = (prior.kind, prior.seed, prior.baseline_run_id) == (kind, seed, baseline_run_id)
-        if not same or (prior.corpus_status == "SYNTHETIC_CORPUS") != allow_synthetic and allow_synthetic:
+        # Post-remediation runs store the baseline's seed, so the request seed only identifies baseline runs.
+        same = (prior.kind, prior.baseline_run_id) == (kind, baseline_run_id) and (
+            kind != "baseline" or prior.seed == seed
+        )
+        if not same or (prior.corpus_status == "SYNTHETIC_CORPUS" and not allow_synthetic):
             raise Conflict("idempotency_key was already used for a different evaluation request")
         return prior, False
     if allow_synthetic and environment == "production":
@@ -554,31 +566,48 @@ def remediate(
     note = " ".join(reason.split())
     if not 3 <= len(note) <= 600:
         raise InvalidRequest("reason must be 3-600 characters")
-    correction = management.correct_fact(
-        db,
-        actor=actor,
-        clock=clock,
-        account_id=fact.account_id,
-        fact_id=fact.id,
-        reason=f"Evidence evaluation {run_id} ({item.verdict}): {note}",
-        data=management.FactInput(
-            claim_type=fact.claim_type,
-            value=fact.typed_value_json,
-            verification_status="hypothesis",
-            confidence_label="unknown",
-            observed_at=fact.observed_at,
-        ),
+    # `correct_fact` commits on its own. If an earlier attempt (or a concurrent one) already withdrew the fact,
+    # link that correction instead of failing forever with "already corrected".
+    successor = db.scalar(
+        select(AccountFact.id).where(AccountFact.organization_id == org, AccountFact.supersedes_fact_id == fact.id)
     )
+    if successor is None:
+        successor = management.correct_fact(
+            db,
+            actor=actor,
+            clock=clock,
+            account_id=fact.account_id,
+            fact_id=fact.id,
+            reason=f"Evidence evaluation {run_id} ({item.verdict}): {note}",
+            data=management.FactInput(
+                claim_type=fact.claim_type,
+                value=fact.typed_value_json,
+                verification_status="hypothesis",
+                confidence_label="unknown",
+                observed_at=fact.observed_at,
+            ),
+        ).id
     link = EvidenceEvalRemediation(
         organization_id=org,
         item_id=item.id,
-        correction_fact_id=correction.id,
+        correction_fact_id=successor,
         reason=note,
         created_by=actor.user_id,
         created_at=clock.now(),
     )
     db.add(link)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        prior = db.scalar(
+            select(EvidenceEvalRemediation).where(
+                EvidenceEvalRemediation.organization_id == org, EvidenceEvalRemediation.item_id == item.id
+            )
+        )
+        if prior is None:
+            raise
+        return prior
     return link
 
 
@@ -663,8 +692,12 @@ def run_view(db: Session, run: EvidenceEvalRun, *, with_items: bool) -> dict[str
     return body
 
 
-def gate(db: Session, org: uuid.UUID) -> dict[str, Any]:
-    """Fail-closed downstream enrollment gate: only a finalized, real, PASSED evaluation opens it."""
+GATE_MAX_AGE = timedelta(days=90)
+
+
+def gate(db: Session, org: uuid.UUID, now: datetime) -> dict[str, Any]:
+    """Fail-closed downstream enrollment gate: only a finalized, real, PASSED evaluation opens it, and only for
+    `GATE_MAX_AGE` after it was finalized (evidence ages; the audit must be repeated)."""
     latest = db.scalar(
         select(EvidenceEvalRun)
         .where(EvidenceEvalRun.organization_id == org, EvidenceEvalRun.finalized_at.is_not(None))
@@ -673,10 +706,13 @@ def gate(db: Session, org: uuid.UUID) -> dict[str, Any]:
     )
     if latest is None:
         return {"enrollment_allowed": False, "status": "BLOCKED", "reason": "no finalized evidence evaluation"}
-    allowed = latest.result == "PASSED" and latest.corpus_status == "OK"
+    expired = latest.finalized_at is not None and now - latest.finalized_at > GATE_MAX_AGE
+    allowed = latest.result == "PASSED" and latest.corpus_status == "OK" and not expired
     return {
         "enrollment_allowed": allowed,
-        "status": latest.result,
-        "reason": latest.result_reason,
+        "status": "EXPIRED" if expired else latest.result,
+        "reason": f"the evaluation is older than {GATE_MAX_AGE.days} days; repeat it"
+        if expired
+        else latest.result_reason,
         "run_id": str(latest.id),
     }

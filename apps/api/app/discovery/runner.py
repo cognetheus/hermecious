@@ -225,11 +225,7 @@ def _search(adapter: SourceAdapter, query: SourceQuery, run: _Run) -> list[Sourc
         if run.cost >= run.budget.max_cost_units:
             run.stop = "cost_cap"
             break
-        remaining = cap - len(accepted)
-        if remaining <= 0:
-            run.stop = "candidate_cap"
-            break
-        limit = min(descriptor.page_size, remaining)
+        limit = min(descriptor.page_size, cap - len(accepted))
         if not run.still_permitted(adapter):
             break
         run.pages += 1
@@ -437,7 +433,7 @@ def run_discovery(
         elif persist and source_url is not None:
             key = f"{descriptor.provider}:{candidate.external_key}"
             existing = db.scalar(
-                select(SourceRecord.id).where(
+                select(SourceRecord).where(
                     SourceRecord.organization_id == actor.organization_id,
                     SourceRecord.provider == descriptor.provider,
                     SourceRecord.external_key == key,
@@ -445,7 +441,10 @@ def run_discovery(
             )
             if existing is not None:
                 already += 1
-                record_id = str(existing)
+                record_id = str(existing.id)
+                if observation.observed_at > existing.observed_at:  # a newer permitted observation renews rights
+                    existing.observed_at, existing.expires_at = observation.observed_at, expires_at
+                    existing.rights_policy_version = observation.rights_policy_version
             else:
                 try:
                     with db.begin_nested():

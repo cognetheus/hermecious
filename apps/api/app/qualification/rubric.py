@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
+from app.core.clock import BUSINESS_TZ
 from app.signals.rubric import EvidenceFact, eligibility
 
 RUBRIC_VERSION = "school-qualification-1.0"
@@ -177,9 +178,7 @@ def assess(
     hard = _usable(facts, "hard_disqualifier", now)
     unverified_hard = [f for f in facts if f.claim_type == "hard_disqualifier" and eligibility(f, now) != "usable"
                        and eligibility(f, now) != "rejected"]  # fmt: skip
-    deferrals = [
-        f for f in _usable(facts, "review_deferral", now) if date.fromisoformat(str(f.value["until"])) > now.date()
-    ]
+    deferrals = [f for f in _usable(facts, "review_deferral", now) if _deferred(f, now)]
     blocking: list[str] = []
     if hard:
         decision, reason = (
@@ -237,12 +236,20 @@ def assess(
     }
 
 
+def _deferred(fact: EvidenceFact, now: datetime) -> bool:
+    """Still in force on the Asia/Karachi calendar day. A malformed stored date is treated as not in force."""
+    try:
+        until = date.fromisoformat(str(fact.value.get("until")))
+    except ValueError:
+        return False
+    return until > now.astimezone(BUSINESS_TZ).date()
+
+
 def input_digest(signal_digest: str, offer: OfferView | None, facts: list[EvidenceFact], now: datetime) -> str:
     """Changes when evidence, rights, the offer's published revision or a deferral's validity changes."""
     deferrals = sorted(
-        f"{f.fact_id}:{date.fromisoformat(str(f.value['until'])) > now.date()}"
-        for f in facts if f.claim_type == "review_deferral" and "until" in f.value
-    )  # fmt: skip
+        f"{f.fact_id}:{_deferred(f, now)}" for f in facts if f.claim_type == "review_deferral" and "until" in f.value
+    )
     payload = {
         "rubric": RUBRIC_VERSION, "signals": signal_digest, "deferrals": deferrals,
         "offer": None if offer is None else [offer.offer_id, offer.revision_id, offer.published, offer.vertical_matches,

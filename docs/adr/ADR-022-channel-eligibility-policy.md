@@ -1,6 +1,6 @@
 # ADR-022: Channel eligibility is a deterministic, simulation-only policy reading over masked, owner-verified evidence
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P4.3_PROMPT.md`; blueprint §4 P4.3 and §2 ("No outbound messaging occurs without channel eligibility and authorization; opt-out halts future outreach"). Batch 07 is absent from the repository.
 
@@ -56,7 +56,7 @@ Decisions are `allow_for_simulation`, `deny` or `defer`. Every deny reason is re
 
 ### 4. Trust boundary until P5
 
-- **Provider template state and inbound messages** come only from `app/eligibility/fixtures/whatsapp_fixtures_v1.json`. Each entry is HMAC-signed, and edited entries are ignored.
+- **Provider template state and inbound messages** come only from `app/eligibility/fixtures/whatsapp_fixtures_v1.json`. Each entry carries an HMAC (with a key committed in the repo), so accidentally edited entries are ignored; it is not protection against deliberate forgery. The trust boundary is that fixtures apply only outside production, to accounts whose every source is a synthetic fixture.
 - **Fixtures apply only** to synthetic accounts outside production. A real account, or any production evaluation, therefore cannot reach `allow_for_simulation` for business initiation or service replies.
 - **Operator-entered template references** are always `template_unverified`.
 - **Clients cannot supply** `last_inbound_at`, `verified` or a template status (`extra="forbid"`).

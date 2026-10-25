@@ -24,9 +24,7 @@ class SchoolSignalSnapshot(Base):
     __tablename__ = "school_signal_snapshots"
     __table_args__ = (
         UniqueConstraint("organization_id", "id"),
-        UniqueConstraint(
-            "organization_id", "account_id", "rubric_version", "input_digest", name="uq_signal_snapshots_input"
-        ),
+
         ForeignKeyConstraint(
             ["organization_id", "account_id"], ["accounts.organization_id", "accounts.id"],
             name="fk_signal_snapshots_org_account",

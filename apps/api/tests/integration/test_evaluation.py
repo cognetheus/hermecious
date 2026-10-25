@@ -206,7 +206,7 @@ def test_eval_01_exactly_thirty_real_distinct_deterministic_and_duplicates_exclu
 
 
 def test_eval_02_03_frozen_universe_and_verdicts(app: FastAPI, client: TestClient, team: Team, operator: str) -> None:
-    accounts = team.schools(30)
+    accounts = team.schools(29)  # + the Excel school = exactly 30 eligible, so every account is always sampled
     excel = team.account(
         "Quality Test School Excel", "Area 99", [("software_in_use", {"status": "observed", "product": "Excel"})]
     )
@@ -239,9 +239,9 @@ def test_eval_02_03_frozen_universe_and_verdicts(app: FastAPI, client: TestClien
         stored = session.scalar(select(EvidenceEvalRun).where(EvidenceEvalRun.id == uuid.UUID(run["id"])))
         assert stored is not None and stored.corpus_fingerprint == fingerprint
 
-    if str(excel) in stored.account_ids:
-        excel_item = next(i for i in body["item_list"] if "Excel" in i["display_text"])
-        assert judge(client, operator, run["id"], excel_item, "unsupported").json()["verdict"] == "unsupported"
+    assert str(excel) in stored.account_ids
+    excel_item = next(i for i in body["item_list"] if "Excel" in i["display_text"])
+    assert judge(client, operator, run["id"], excel_item, "unsupported").json()["verdict"] == "unsupported"
     good = next(i for i in body["item_list"] if i["item_kind"] == "fact" and "campus_count" in i["display_text"])
     assert judge(client, operator, run["id"], good, "supported").status_code == 200
     late = team.account("Late Addition School", "Area 77", [("campus_count", {"count": 3})])
@@ -250,7 +250,7 @@ def test_eval_02_03_frozen_universe_and_verdicts(app: FastAPI, client: TestClien
         rerun_ids = session.scalar(
             select(EvidenceEvalRun.account_ids).where(EvidenceEvalRun.id == uuid.UUID(rerun["id"]))
         )
-    # The sample is the first 30 of 32 by sha256(seed:id), and `late` has a random id. Either it enters the sample
+    # The sample is the first 30 of 31 by sha256(seed:id), and `late` has a random id. Either it enters the sample
     # and the fingerprint changes, or the same 30 are chosen and the frozen fingerprint is reproduced exactly.
     if str(late) in (rerun_ids or []):
         assert rerun["corpus_fingerprint"] != fingerprint
@@ -265,7 +265,9 @@ def test_eval_04_expired_contradicted_and_metadata_only_are_never_supported(
     app: FastAPI, client: TestClient, team: Team, operator: str, clock: FixedClock
 ) -> None:
     team.schools(27)
-    team.account("Expiring School", "Area 50", [("campus_count", {"count": 2})], expires_in=timedelta(days=1))
+    expiring = team.account(
+        "Expiring School", "Area 50", [("campus_count", {"count": 2})], expires_in=timedelta(days=1)
+    )
     listing = team.account("Listing Only School", "Area 51", [("campus_count", {"count": 4})], storage="metadata_only")
     conflict = team.account(
         "Conflict School", "Area 52", [("campus_count", {"count": 2}), ("campus_count", {"count": 5})]
@@ -282,9 +284,6 @@ def test_eval_04_expired_contradicted_and_metadata_only_are_never_supported(
     assert refused.status_code == 409 and "unauditable" in refused.json()["error"]["message"]
     contradicted = next(i for i in items if i["account_id"] == str(conflict) and i["item_kind"] == "signal")
     assert judge(client, operator, run["id"], contradicted, "supported").status_code == 409
-    expiring = next(
-        i for i in items if "Expiring" not in i["display_text"] and i["account_id"] not in (str(listing), str(conflict))
-    )
     for item in detail(client, run["id"])["item_list"]:
         verdict = "supported" if item["eligibility_at_freeze"] == "usable" else "unverifiable"
         assert judge(client, operator, run["id"], item, verdict).status_code == 200, item
@@ -297,7 +296,8 @@ def test_eval_04_expired_contradicted_and_metadata_only_are_never_supported(
         1 for i in items if i["eligibility_at_freeze"] == "usable"
     )  # the lapsed one no longer counts
     assert final["state"] == "FAILED" and final["still_displayed_failures"] >= 3  # non-supported items are failures
-    assert expiring
+    # The lapsing item was usable when frozen, so the numerator drop above is caused by its expiry.
+    assert any(i["account_id"] == str(expiring) and i["eligibility_at_freeze"] == "usable" for i in items)
 
 
 # --- EVAL-05 / 06 ---------------------------------------------------------------------------------------------------
@@ -383,6 +383,11 @@ def test_eval_06_real_corpus_mechanism_fails_then_passes_after_remediation(
     gate = client.get("/api/v1/evidence-evals/gate").json()
     assert gate["enrollment_allowed"] is True and gate["run_id"] == post["id"]
     assert detail(client, run["id"])["state"] == "FAILED"  # the baseline result is never rewritten
+    app.state.clock.advance(timedelta(days=91))  # evidence ages: the audit must be repeated
+    client.cookies.clear()
+    logged_in(client, "operator@q.example")
+    expired = client.get("/api/v1/evidence-evals/gate").json()
+    assert expired["enrollment_allowed"] is False and expired["status"] == "EXPIRED"
 
 
 # --- EVAL-08 -------------------------------------------------------------------------------------------------------

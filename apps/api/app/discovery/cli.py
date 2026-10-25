@@ -4,7 +4,8 @@ Default provider: the offline synthetic fixture (development/test only).
 `--provider osm_overpass_schools --confirm-live` makes ONE bounded Overpass
 request using the owner-reviewed settings (ADR-013); it refuses unless every
 activation setting is present. Prints the run report as JSON; request count
-and endpoint go to stderr as evidence. There is no HTTP endpoint that starts a run.
+and endpoint go to stderr as evidence. Since P2.4 a run can also be requested over
+HTTP (`POST /api/v1/discovery/runs`, owner/operator).
 """
 
 import argparse

@@ -35,6 +35,7 @@ export type SimulationItem = {
   sim_receipt_id: string | null;
   attempts: number;
   draft_revision: number | null;
+  approval_id: string | null;
   permission_revision: { id: string; version: number } | null;
   next_window_at: string | null;
 };

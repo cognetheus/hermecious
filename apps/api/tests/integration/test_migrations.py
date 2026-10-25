@@ -9,7 +9,7 @@ from sqlalchemy.engine import URL
 from app.core.settings import Settings
 from tests.integration.db import alembic, plain, scratch_database
 
-HEAD = "0018"
+HEAD = "0019"
 
 
 @pytest.fixture

@@ -23,7 +23,7 @@ from app.api.dependencies import AppClock, AppSettings
 from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
 from app.auth.models import Role
 from app.core.errors import InvalidRequest
-from app.discovery import runs, seed_import
+from app.discovery import registry, runs, seed_import
 from app.discovery.models import DiscoveryCandidate
 from app.persistence.db import DbSession
 
@@ -224,7 +224,7 @@ def get_run_candidates(run_id: uuid.UUID, actor: CurrentActor, db: DbSession, cl
     run = runs.get_run(db, actor.organization_id, run_id)
     items = runs.run_candidates_view(db, run, clock.now())
     return JSONResponse({"items": items, "attribution": run.attribution, "synthetic": run.provider ==
-                         "fixture_lahore_schools"}, headers=NO_STORE)  # fmt: skip
+                         registry.FIXTURE_PROVIDER}, headers=NO_STORE)  # fmt: skip
 
 
 @router.post("/runs/{run_id}/cancel")

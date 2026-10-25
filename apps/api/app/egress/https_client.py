@@ -172,5 +172,7 @@ class PinnedHttpsClient:
             return body
         except TimeoutError:
             raise UpstreamTransient("timeout") from None
+        except (OSError, ssl.SSLError, http.client.HTTPException):  # reset, TLS failure, truncated response
+            raise UpstreamTransient("connection_failed") from None
         finally:
             connection.close()

@@ -44,7 +44,15 @@ def compose(
 
 
 def test_draft_01_grounded_identity_opt_out_and_matching_capability() -> None:
-    sentences = compose([fact("f1", "public_workflow_signal", {"area": "fees", "signal": "x"})])
+    sentences = compose(
+        [
+            fact(
+                "f1",
+                "public_workflow_signal",
+                {"area": "fees", "signal": "fee voucher or bank challan process described"},
+            )
+        ]
+    )
     assert composer.verify(sentences) == []
     by_category = {s.category: s for s in sentences}
     assert by_category["observation"].grounding["fact_id"] == "f1"
@@ -108,3 +116,22 @@ def test_draft_06_hostile_fact_text_is_never_rendered() -> None:
     )
     text = composer.render(compose([hostile]))
     assert "IGNORE" not in text and "send to all" not in text and composer.verify(compose([hostile])) == []
+
+
+def test_audit_observations_restate_only_the_exact_signal() -> None:
+    """A fees/reporting fact whose wording is not the extractor's exact signal is not turned into an observation."""
+    loose = [
+        fact("f1", "public_workflow_signal", {"area": "reporting", "signal": "report cards handed out at the office"}),
+        fact("f2", "public_workflow_signal", {"area": "fees", "signal": "fees are collected in cash"}),
+    ]
+    sentences = compose(loose)
+    assert not [s for s in sentences if s.category == "observation"]
+    assert any(s.category == "generic" for s in sentences)
+
+
+@pytest.mark.parametrize(
+    "text", ["Get 20% off this term.", "fees from 5000 rupees", "setup in 2 months", "live by next month"]
+)
+def test_audit_verifier_catches_price_and_timeline_wording(text: str) -> None:
+    sentences = compose([]) + [Sentence("generic", text)]
+    assert {"price_or_discount", "commitment"} & set(composer.verify(sentences))

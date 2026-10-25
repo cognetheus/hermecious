@@ -18,7 +18,7 @@ export type Permission = {
   business_name?: string;
   capture_method?: string;
   consent_wording_version?: string;
-  proof?: { kind: string; reference: string; key_id: string };
+  proof?: { kind: string; hint: string; reference: string; key_id: string };
   captured_at?: string;
   recorded_at?: string;
   recorded_by?: string | null;

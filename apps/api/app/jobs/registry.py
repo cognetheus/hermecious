@@ -158,7 +158,7 @@ def _simulation_run(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any
     from app.core.settings import load_settings  # noqa: PLC0415
     from app.simulations.service import handle_simulation_job  # noqa: PLC0415  # avoids an import cycle
 
-    result: dict[str, Any] = handle_simulation_job(db, ctx, payload, load_settings())
+    result: dict[str, Any] = handle_simulation_job(db, ctx, payload, load_settings)
     return result
 
 

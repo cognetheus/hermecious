@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.accounts import service as account_service
 from app.accounts.models import AccountFact, ActionAudit, SourceRecord
@@ -160,7 +160,7 @@ def test_research_01_atomic_run_on_admitted_account_with_two_permitted_sources(
     created = start(client, operator, account, org.source(JOHAR), org.source(RAVI))
     assert created.status_code == 202, created.text
     run = created.json()
-    assert (run["status"], run["extractor_version"], len(run["source_record_ids"])) == ("pending", "rules-1.0", 2)
+    assert (run["status"], run["extractor_version"], len(run["source_record_ids"])) == ("pending", "rules-1.1", 2)
     with db(app) as session:
         job = session.scalar(select(Job).where(Job.job_type == "research.run"))
         assert job is not None and job.payload_json == {"run_id": run["id"]}
@@ -478,3 +478,50 @@ def test_research_09_review_replay_is_idempotent(app: FastAPI, client: TestClien
     assert (again["replayed"], again["fact_id"]) == (True, first["fact_id"]) and count(app, AccountFact) == 1
     changed = client.post(url, json={**body, "reason": "Different words"}, headers=mutation_headers(operator))
     assert changed.status_code == 409
+
+
+# --- Audit follow-ups (2026-10-25) --------------------------------------------------------------------------------
+
+
+def test_audit_cancel_during_the_last_source_is_reported_cancelled(
+    app: FastAPI, client: TestClient, org: Org, operator: str, fetcher: Any
+) -> None:
+    account = org.account("Crescent Valley Grammar School (Synthetic)", "Johar Town", JOHAR)
+    run: dict[str, str] = {}
+
+    def cancel_while_fetching(_source_key: str) -> None:
+        with db(app) as session:
+            service.cancel_run(session, actor=org.actor, clock=app.state.clock, run_id=uuid.UUID(run["id"]))
+
+    fetcher({}, on_fetch=cancel_while_fetching)
+    run["id"] = start(client, operator, account, org.source(JOHAR)).json()["id"]
+    detail = finished(app, client, run["id"])
+    assert detail["status"] == "cancelled"  # was reported "completed" from a stale in-memory row
+
+
+def test_audit_orphaned_run_whose_worker_died_can_be_cancelled(
+    app: FastAPI, client: TestClient, org: Org, operator: str
+) -> None:
+    account = org.account("Crescent Valley Grammar School (Synthetic)", "Johar Town", JOHAR)
+    run_id = start(client, operator, account, org.source(JOHAR)).json()["id"]
+    with db(app) as session:  # the runner dead-lettered the job after its last lease expired
+        session.execute(text("UPDATE research_runs SET status = 'running' WHERE id = :r"), {"r": run_id})
+        session.execute(
+            text("UPDATE jobs SET status = 'dead', finished_at = now(), last_error_class = 'lease_expired'")
+        )
+        session.commit()
+    cancelled = client.post(f"/api/v1/research-runs/{run_id}/cancel", headers=mutation_headers(operator))
+    assert cancelled.status_code == 200, cancelled.text
+    assert client.get(f"/api/v1/research-runs/{run_id}").json()["status"] == "cancelled"
+
+
+def test_audit_two_rules_on_one_sentence_both_become_claims(app: FastAPI) -> None:
+    from app.research import extract  # noqa: PLC0415
+
+    found = extract.extract("For enquiries please use the contact form or call 042-1234567.", limit=10)
+    assert len({(p.start, p.end) for p in found.proposals}) == 1 and len({p.rule_id for p in found.proposals}) == 2
+    with db(app) as session:  # the stored key includes the rule, so the second claim is no longer dropped
+        definition = session.scalar(
+            text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'uq_research_claims_span_rule'")
+        )
+    assert definition is not None and "rule_id" in definition

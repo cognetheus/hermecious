@@ -1,6 +1,6 @@
 # ADR-016: Research reads only associated, rights-checked sources by key; deterministic rules propose claims; reviewers create facts
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P3.1_PROMPT.md`; blueprint §4 P3.1. The prompt's `docs/phases/HERMECIOUS_BATCH_05_P3.1-P3.3.md` was **not present** in the repository, so the prompt and blueprint are the specification; see the ledger.
 
@@ -42,7 +42,7 @@ Documents come from a `DocumentFetcher` keyed by `(provider, external_key)`. Onl
 
 **Budgets:** 60 000 normalized characters per run, 30 s per source and 60 s per run. Text exists only in memory; observations keep a SHA-256 hash and counts.
 
-### 5. Extraction (`rules-1.0`)
+### 5. Extraction (`rules-1.0`; `rules-1.1` after the 2026-10-25 audit: "online admission form" only when "online" qualifies the admission)
 
 - **Rules:** sentence-level English and Urdu rules over P1.2 claim types only:
   - admissions process;

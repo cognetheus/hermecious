@@ -33,6 +33,7 @@ from app.campaigns.models import Campaign
 from app.contacts import service as contacts
 from app.core.clock import Clock
 from app.core.errors import Conflict, Unprocessable
+from app.core.logging import scrub_text
 from app.core.settings import Settings
 from app.drafts import composer
 from app.drafts import service as drafts
@@ -169,7 +170,7 @@ def _start(
 
 
 def _clean(reason: str) -> str:
-    note = " ".join(reason.split())
+    note = scrub_text(" ".join(reason.split()))  # free text: never keep a number or email in review history
     if not 3 <= len(note) <= 500:
         raise Unprocessable("reason must be 3-500 characters")
     return note
@@ -417,6 +418,8 @@ def status(db: Session, draft: Draft, now: datetime, settings: Settings) -> dict
         return base | {"state": "not_reviewed"}
     if latest.decision != "approved_content":
         return base | {"state": latest.decision}
+    if not drafts.is_latest(db, draft):  # superseded: stale whatever else is true (and cheap to list)
+        return base | {"state": "approval_stale", "stale_reasons": ["newer_revision_exists"]}
     assert latest.contact_id is not None and latest.template_ref is not None  # noqa: S101  # DB check
     reasons = dependencies(db, draft, now, settings.environment)
     if latest.expires_at is not None and now >= latest.expires_at:
@@ -428,6 +431,8 @@ def status(db: Session, draft: Draft, now: datetime, settings: Settings) -> dict
         reasons += [f"eligibility_{r['code']}" for r in decision["reasons"]]
     if decision["permission_revision"] != latest.version_vector.get("permission_revision"):
         reasons.append("permission_changed")
+    if decision["policy_version"] != latest.version_vector.get("policy_version"):
+        reasons.append("policy_changed")
     campaign, _account = _context(db, draft)
     if campaign.revision != latest.version_vector.get("campaign_revision"):
         reasons.append("campaign_changed")

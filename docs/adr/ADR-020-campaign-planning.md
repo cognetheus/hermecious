@@ -1,6 +1,6 @@
 # ADR-020: Campaigns are internal planning bound to a published offer; approval is for drafting review only and is gated by evidence quality
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P4.1_PROMPT.md`; blueprint §4 P4.1. Batch 06 is absent from the repository.
 

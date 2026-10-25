@@ -1,6 +1,6 @@
 # ADR-015: Discovery runs are durable jobs over reviewed sources; accounts are created only by explicit reviewer admission
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** Batch 04 §P2.4; `OPUS_P2.4_PROMPT.md`; ADR-011 (jobs), ADR-012/013 (sources), ADR-014 (identity)
 

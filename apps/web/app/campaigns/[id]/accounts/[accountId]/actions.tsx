@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { newKey } from "../../../../../lib/discovery";
 import { errorMessage, postJson } from "../../../../../lib/mutate";
@@ -27,7 +27,7 @@ function useRun() {
 export function GenerateDraft({ campaignId, accountId }: { campaignId: string; accountId: string }) {
   const { message, pending, run } = useRun();
   const [template, setTemplate] = useState("school_introduction_v1");
-  const key = useMemo(() => newKey("draft"), []);
+  const [key, setKey] = useState(() => newKey("draft")); // stable for retries; fresh once a draft is created
   return (
     <p>
       <label htmlFor="draft-template">Template</label>{" "}
@@ -45,7 +45,13 @@ export function GenerateDraft({ campaignId, accountId }: { campaignId: string; a
       <button
         type="button"
         disabled={pending}
-        onClick={() => run(() => postJson(`/api/v1/campaigns/${campaignId}/accounts/${accountId}/drafts`, { template_id: template, locale: "en-PK", idempotency_key: key }), "Draft created for review")}
+        onClick={() =>
+          run(async () => {
+            const result = await postJson(`/api/v1/campaigns/${campaignId}/accounts/${accountId}/drafts`, { template_id: template, locale: "en-PK", idempotency_key: key });
+            if (result.ok) setKey(newKey("draft"));
+            return result;
+          }, "Draft created for review")
+        }
       >
         Generate draft
       </button>{" "}
@@ -59,12 +65,19 @@ export function GenerateDraft({ campaignId, accountId }: { campaignId: string; a
 export function RegenerateDraft({ draftId }: { draftId: string }) {
   const { message, pending, run } = useRun();
   const [reason, setReason] = useState("");
-  const key = useMemo(() => newKey("regen"), []);
+  const [key, setKey] = useState(() => newKey("regen")); // stable for retries; fresh once a revision is created
   return (
     <p>
       <label htmlFor="regen-reason">Reason to regenerate</label>{" "}
       <input id="regen-reason" value={reason} onChange={(e) => setReason(e.target.value)} minLength={3} maxLength={500} />{" "}
-      <button type="button" disabled={pending || reason.trim().length < 3} onClick={() => run(() => postJson(`/api/v1/drafts/${draftId}/regenerate`, { reason, idempotency_key: key }), "New revision created")}>
+      <button type="button" disabled={pending || reason.trim().length < 3} onClick={() =>
+          run(async () => {
+            const result = await postJson(`/api/v1/drafts/${draftId}/regenerate`, { reason, idempotency_key: key });
+            if (result.ok) setKey(newKey("regen"));
+            return result;
+          }, "New revision created")
+        }
+      >
         Regenerate (new revision)
       </button>{" "}
       <span role="status" aria-live="polite">
@@ -109,12 +122,14 @@ export function EditDraft({ draftId, revision, body }: { draftId: string; revisi
 type ContactOption = { id: string; address: string; suppressed: boolean };
 
 export function ReviewDraft({
+  campaignId,
   draftId,
   digest,
   contacts,
   templates,
   approvalId,
 }: {
+  campaignId: string;
   draftId: string;
   digest: string;
   contacts: ContactOption[];
@@ -125,6 +140,7 @@ export function ReviewDraft({
   const [contact, setContact] = useState("");
   const [template, setTemplate] = useState("");
   const [reason, setReason] = useState("");
+  const [eligibility, setEligibility] = useState<string | null>(null);
   const ready = reason.trim().length >= 3;
   return (
     <form aria-label="Review content" onSubmit={(e) => e.preventDefault()}>
@@ -147,6 +163,19 @@ export function ReviewDraft({
           </option>
         ))}
       </select>{" "}
+      <button
+        type="button"
+        disabled={!contact || !template}
+        onClick={async () => {
+          const result = await postJson("/api/v1/channel-eligibility/evaluate", { contact_id: contact, purpose: "marketing", campaign_id: campaignId, template_ref: template });
+          const d = result.data as { decision?: string; reasons?: { code: string }[] };
+          setEligibility(result.ok ? `${(d.decision ?? "").replaceAll("_", " ")}${d.reasons?.length ? `: ${d.reasons.map((r) => r.code).join(", ")}` : ""} (simulation only)` : errorMessage(result.data));
+        }}
+      >
+        Check eligibility
+      </button>{" "}
+      <span aria-label="Eligibility for this contact">{eligibility}</span>
+      <br />
       <label htmlFor="review-reason">Review reason</label>{" "}
       <input id="review-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />{" "}
       {approvalId ? (

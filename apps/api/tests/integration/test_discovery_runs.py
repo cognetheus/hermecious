@@ -32,7 +32,6 @@ from tests.integration.auth_helpers import add_organization, add_user, db, logge
 from tests.integration.test_discovery_live import BBOX, GOOD, FakeHttp, element, overpass, reviewed
 
 FIXTURE = "fixture_lahore_schools"
-REAL_BUILD_ADAPTER = runs.build_adapter
 REASON = "Reviewed the listing and source link"
 
 
@@ -242,8 +241,7 @@ def test_run_04_truncation_rate_limit_empty_and_stale_policy_are_truthful(
     csrf = logged_in(client, "operator@runs.example")
     run_id = start(client, csrf, provider="osm_overpass_schools").json()["id"]
     monkeypatch.setattr(runs, "SETTINGS", lambda: app_settings)  # owner withdrew the review before execution
-    monkeypatch.setattr(runs, "build_adapter", REAL_BUILD_ADAPTER)
-    worker(live).run_once()
+    worker(live).run_once()  # the fake transport stays wired, so any request would be counted below
     stale = client.get(f"/api/v1/discovery/runs/{run_id}").json()
     assert (stale["status"], stale["error_code"], stale["displayed_count"]) == ("failed", "provider_disabled", 0)
     assert live.state.http.requests == 0
@@ -537,3 +535,32 @@ def test_run_04_worker_enforces_the_snapshotted_operator_budget(
     assert (run["displayed_count"], run["usage"]["search_pages"]) == (2, 1)
     assert run["truncated"] is True and run["status"] == "completed" and run["stop_reason"] == "candidate_cap"
     assert count(app, DiscoveryRunCandidate) == 2
+
+
+def test_audit_confirmed_same_campus_pair_is_admitted_once_and_osm_rights_are_rechecked(
+    app: FastAPI, operator: str, osm_app: Callable[..., FastAPI], monkeypatch: pytest.MonkeyPatch,
+    app_settings: Settings,
+) -> None:  # fmt: skip
+    co_located = [element("node", 9201, "Synthetic Cedar School"), element("node", 9202, "Synthetic Cedar Campus")]
+    live, run = osm_run(osm_app, overpass(co_located))
+    client = TestClient(live, raise_server_exceptions=False)
+    csrf = logged_in(client, "operator@runs.example")
+    items = client.get(f"/api/v1/discovery/runs/{run['id']}/candidates").json()["items"]
+    (match,) = items[0]["matches"]
+    confirmed = client.post(
+        f"/api/v1/identity/suggestions/{match['suggestion_id']}/decisions",
+        json={"command_id": str(uuid.uuid4()), "action": "confirm_same_campus", "expected_version": match["version"],
+              "reason": "One campus, two listings"},
+        headers=mutation_headers(csrf),
+    )  # fmt: skip
+    assert confirmed.status_code == 200
+    first = decide(client, csrf, run["id"], items[0], "accept_new")
+    assert first.status_code == 200 and count(app, Account) == 1
+    # The owner withdraws OSM before the twin is reviewed: admission re-checks the live provider policy.
+    monkeypatch.setattr(runs, "SETTINGS", lambda: app_settings)
+    withdrawn = decide(client, csrf, run["id"], items[1], "accept_new")
+    assert withdrawn.status_code == 409 and "cannot admit" in withdrawn.json()["error"]["message"]
+    monkeypatch.setattr(runs, "SETTINGS", lambda: reviewed(app_settings))
+    twin = decide(client, csrf, run["id"], items[1], "accept_new")
+    assert twin.status_code == 200 and count(app, Account) == 1  # joined, never duplicated
+    assert twin.json()["account_id"] == first.json()["account_id"]

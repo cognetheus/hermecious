@@ -67,10 +67,12 @@ export default async function DraftStudio({ params }: { params: Promise<{ id: st
                     <td>{s.category}</td>
                     <td>
                       {s.grounding.fact_id ? `fact ${s.grounding.fact_id}` : null}
+                      {s.grounding.observed_at ? ` (observed ${karachiTime(s.grounding.observed_at)})` : null}
                       {s.source ? (
                         <>
                           {"; "}
                           {s.source.provider} ({s.source.rights_policy_version}
+                          {s.source.expires_at ? `, rights until ${karachiTime(s.source.expires_at)}` : ""}
                           {s.source.rights_current ? "" : ", rights expired"})
                           {link ? (
                             <>
@@ -112,7 +114,7 @@ export default async function DraftStudio({ params }: { params: Promise<{ id: st
             ) : null}
             <p>Approval is content authorization only. It is not consent, not queued, not sent and not a WhatsApp template approval.</p>
             {canEdit ? (
-              <ReviewDraft key={`${latest.id}-${latest.approval.review?.id ?? "none"}`} draftId={latest.id} digest={latest.content_digest} contacts={contactOptions} templates={policy.fixtures.templates} approvalId={liveApproval} />
+              <ReviewDraft campaignId={id} key={`${latest.id}-${latest.approval.review?.id ?? "none"}`} draftId={latest.id} digest={latest.content_digest} contacts={contactOptions} templates={policy.fixtures.templates} approvalId={liveApproval} />
             ) : null}
             {history && history.body.items.length > 0 ? (
               <ol aria-label="Review history" reversed>
@@ -134,7 +136,13 @@ export default async function DraftStudio({ params }: { params: Promise<{ id: st
           <ul>
             {older.map((d) => (
               <li key={d.id}>
-                Revision {d.revision} ({d.origin}), {karachiTime(d.created_at)}: {d.status}; approval: {d.approval.state.replaceAll("_", " ")}
+                <details>
+                  <summary>
+                    Revision {d.revision} ({d.origin}), {karachiTime(d.created_at)}: {d.status}; approval: {d.approval.state.replaceAll("_", " ")}
+                  </summary>
+                  <pre style={{ whiteSpace: "pre-wrap" }}>{d.body_text}</pre>
+                  {d.regenerate_reason ? <p>Reason: {d.regenerate_reason}</p> : null}
+                </details>
               </li>
             ))}
           </ul>

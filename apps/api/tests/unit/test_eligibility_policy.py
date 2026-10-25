@@ -194,3 +194,11 @@ def test_fixtures_are_signed_and_tampering_is_ignored() -> None:
     assert hello is not None and hello["received_at"] == datetime(2026, 10, 23, 5, 0, tzinfo=UTC)
     assert all(m["address"].startswith("+9200000") for m in fixtures._load()[1].values())
     assert "address" not in str(fixtures.catalogue())
+
+
+@pytest.mark.parametrize("raw", ["+92۳۰۰۰۰۰۰۱۰۱", "03۰۰۰۰۰۰۱۰۱", "٠٣٠٠٠٠٠٠١٠١"])
+def test_audit_eastern_digits_canonicalise_to_the_same_number(raw: str) -> None:
+    """Urdu/Arabic digits must not create a second identity (duplicate check and suppression use the digest)."""
+    assert addresses.canonical(raw) == "+923000000101"
+    key = b"k" * 32
+    assert addresses.digest(key, addresses.canonical(raw)) == addresses.digest(key, "+923000000101")

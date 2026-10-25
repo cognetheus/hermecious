@@ -4,7 +4,9 @@ Until P5 there is no provider connection, so:
 - only these fixtures can say a template is provider-approved (operator-entered template refs never are);
 - only these fixtures can supply an inbound message time (a client never sends `last_inbound_at`).
 
-Each entry is signed (HMAC-SHA256 over its canonical JSON) so an edited entry is ignored. Fixtures are refused in
+Each entry carries an HMAC over its canonical JSON with a key committed in the repo: it catches accidental edits,
+not a deliberate forgery, so the real trust boundary is that fixtures apply only outside production to fixture-sourced
+accounts. Fixtures are refused in
 production and apply only to synthetic accounts. Numbers are zero-filled placeholders, never real contacts.
 """
 

@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -127,7 +127,10 @@ SETTINGS: Callable[[], Settings] = load_settings  # worker-side settings (tests 
 
 def _lock_run(db: Session, org: uuid.UUID, run_id: uuid.UUID) -> DiscoveryRun | None:
     return db.scalar(
-        select(DiscoveryRun).where(DiscoveryRun.organization_id == org, DiscoveryRun.id == run_id).with_for_update()
+        select(DiscoveryRun)
+        .where(DiscoveryRun.organization_id == org, DiscoveryRun.id == run_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)  # sessions keep objects after commit: never read a stale run
     )
 
 
@@ -213,6 +216,8 @@ def cancel_run(db: Session, *, actor: Actor, clock: Clock, run_id: uuid.UUID) ->
             ),
             {"now": now, "org": actor.organization_id, "job": run.job_id},
         )
+    elif job_service.worker_gone(db, actor.organization_id, run.job_id):  # orphaned: no worker will finish it
+        run.status, run.finished_at, run.partial_reason = "cancelled", now, "worker_lost"
     run.version += 1
     run.updated_at = now
     management._audit(db, actor, clock, "discovery.run_cancel_requested", run.id, {"status": run.status},
@@ -408,7 +413,43 @@ def _rights_refusal(db: Session, candidate: DiscoveryCandidate, now: datetime, e
             registry.check_descriptor(seed_import.DESCRIPTOR, environment, now=now)
         except registry.SourcePolicyError as exc:
             return exc.reason
+    if candidate.provider == osm.PROVIDER:  # the owner may have disabled OSM or its rights review may have lapsed
+        try:
+            registry.check_descriptor(osm.descriptor_from_settings(SETTINGS()), environment, now=now)
+        except registry.SourcePolicyError as exc:
+            return exc.reason
     return None
+
+
+def _confirmed_twin(db: Session, org: uuid.UUID, candidate_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID] | None:
+    """(suggestion, account) when a reviewer confirmed this candidate is the same campus as another listing that is
+    already admitted: admission then joins that account instead of creating a duplicate."""
+    other = case(
+        (IdentitySuggestion.left_candidate_id == candidate_id, IdentitySuggestion.right_candidate_id),
+        else_=IdentitySuggestion.left_candidate_id,
+    )
+    row = db.execute(
+        select(IdentitySuggestion.id, CandidateAccountLink.account_id)
+        .join(
+            CandidateAccountLink,
+            and_(
+                CandidateAccountLink.organization_id == org,
+                CandidateAccountLink.candidate_id == other,
+                CandidateAccountLink.unlinked_at.is_(None),
+            ),
+        )
+        .where(
+            IdentitySuggestion.organization_id == org,
+            IdentitySuggestion.status == "confirmed",
+            IdentitySuggestion.right_candidate_id.is_not(None),
+            or_(
+                IdentitySuggestion.left_candidate_id == candidate_id,
+                IdentitySuggestion.right_candidate_id == candidate_id,
+            ),
+        )
+        .limit(1)
+    ).first()
+    return (row[0], row[1]) if row is not None else None
 
 
 def _open_match(db: Session, org: uuid.UUID, candidate_id: uuid.UUID) -> bool:
@@ -522,14 +563,25 @@ def review_candidate(
         if REVIEW_TRANSITIONS[action].get(row.display_status) is None:
             raise Conflict(f"cannot {action} a candidate that is {row.display_status}")
         next_status = REVIEW_TRANSITIONS[action][row.display_status]
-    if action in ("accept_new", "attach_existing") and not converged:
+    if action in ("accept_new", "attach_existing"):  # also when converging: never mark expired evidence admitted
         refusal = _rights_refusal(db, candidate, now, environment)
         if refusal is not None:
             raise Conflict(f"cannot admit: {refusal}; a new permitted observation is required")
     if action == "accept_new" and not converged:
-        if _open_match(db, org, candidate_id):
+        twin = _confirmed_twin(db, org, candidate_id)
+        if twin is not None:  # the same campus is already admitted: associate, never duplicate
+            suggestion_id, account_id = twin
+            db.add(
+                CandidateAccountLink(
+                    organization_id=org, candidate_id=candidate_id, account_id=account_id,
+                    suggestion_id=suggestion_id, linked_by=actor.user_id, linked_at=now,
+                )
+            )  # fmt: skip
+            candidate.status, candidate.updated_at = "admitted", now
+        elif _open_match(db, org, candidate_id):
             raise Conflict("decide the possible same-campus match first (confirm or mark distinct)")
-        account_id = _admit_new(db, actor, clock, candidate, run_id)
+        else:
+            account_id = _admit_new(db, actor, clock, candidate, run_id)
     elif action == "attach_existing":
         target = db.scalar(select(Account.id).where(Account.organization_id == org, Account.id == existing_account_id))
         if target is None:

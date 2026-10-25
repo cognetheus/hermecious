@@ -81,6 +81,7 @@ class SimulationRun(Base):
     status: Mapped[str] = mapped_column(String(16))
     max_items: Mapped[int] = mapped_column(Integer)
     considered: Mapped[int] = mapped_column(Integer)
+    account_ids: Mapped[list[str] | None] = mapped_column(JSONB)  # candidate pool, frozen at the first attempt
     real_messages_sent: Mapped[int] = mapped_column(Integer)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     policy_version: Mapped[str] = mapped_column(String(40))

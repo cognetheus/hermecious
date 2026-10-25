@@ -128,8 +128,8 @@ class ResearchClaim(Base):
     __table_args__ = (
         UniqueConstraint("organization_id", "id"),
         UniqueConstraint(
-            "organization_id", "observation_id", "claim_type", "locator_start", "locator_end",
-            name="uq_research_claims_span",
+            "organization_id", "observation_id", "claim_type", "rule_id", "locator_start", "locator_end",
+            name="uq_research_claims_span_rule",
         ),
         UniqueConstraint("organization_id", "review_key"),
         ForeignKeyConstraint(

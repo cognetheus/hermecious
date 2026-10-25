@@ -1,6 +1,6 @@
 # ADR-021: Drafts are deterministic, source-grounded, immutable and never sendable
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P4.2_PROMPT.md`; blueprint §4 P4.2. Batch 06 is absent from the repository.
 

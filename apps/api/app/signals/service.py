@@ -13,7 +13,6 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import exists, func, select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, aliased
 
 from app.accounts import management
@@ -39,6 +38,12 @@ def _account(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> Account:
     return account
 
 
+def _earliest(*moments: datetime | None) -> datetime | None:
+    """A fact is usable only while both the fact itself and its source are within their validity."""
+    present = [m for m in moments if m is not None]
+    return min(present) if present else None
+
+
 def evidence(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> tuple[list[rubric.EvidenceFact], int]:
     successor = aliased(AccountFact)
     rows = db.execute(
@@ -55,7 +60,7 @@ def evidence(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> tuple[list[r
             verification_status=fact.verification_status, observed_at=fact.observed_at,
             source_id=str(source.id) if source else None, source_url=source.source_url if source else None,
             storage_class=source.permitted_storage_class if source else None,
-            source_expires_at=source.expires_at if source else None,
+            source_expires_at=_earliest(fact.expires_at, source.expires_at if source else None),
         )
         for fact, source in rows
     ]  # fmt: skip
@@ -78,30 +83,36 @@ def generate(db: Session, *, actor: Actor, clock: Clock, account_id: uuid.UUID) 
     if account.status == AccountStatus.EXCLUDED:
         raise Conflict("archived accounts are not assessed")
     now = clock.now()
+    # Serialise generation per account, then compare with the *newest* brief only: evidence that changes and then
+    # changes back (A -> B -> A) must produce a new current brief, not resurrect an older one behind B.
+    db.scalar(select(Account.id).where(Account.organization_id == org, Account.id == account_id).with_for_update())
     facts, links = evidence(db, org, account_id)
     digest, inputs = rubric.input_digest(facts, now, links)
+    head = _newest(db, org, account_id)
+    if head is not None and (head.rubric_version, head.input_digest) == (rubric.RUBRIC_VERSION, digest):
+        db.commit()
+        return head, False
     brief = rubric.evaluate(facts, now, links)
-    created = db.scalar(
-        insert(SchoolSignalSnapshot)
-        .values(id=uuid.uuid4(), organization_id=org, account_id=account_id, rubric_version=rubric.RUBRIC_VERSION,
-                input_digest=digest, inputs_json=inputs, signals_json=brief, linked_listings=links,
-                created_by=actor.user_id, created_at=now)
-        .on_conflict_do_nothing(constraint="uq_signal_snapshots_input")
-        .returning(SchoolSignalSnapshot.id)
+    snapshot = SchoolSignalSnapshot(
+        organization_id=org, account_id=account_id, rubric_version=rubric.RUBRIC_VERSION, input_digest=digest,
+        inputs_json=inputs, signals_json=brief, linked_listings=links, created_by=actor.user_id, created_at=now,
     )  # fmt: skip
-    if created is not None:
-        management._audit(db, actor, clock, "account.school_signals_generated", account_id,
-                          {"snapshot_id": str(created), "rubric_version": rubric.RUBRIC_VERSION,
-                           "states": {k: v["state"] for k, v in brief["signals"].items()}})  # fmt: skip
+    db.add(snapshot)
+    db.flush()
+    management._audit(db, actor, clock, "account.school_signals_generated", account_id,
+                      {"snapshot_id": str(snapshot.id), "rubric_version": rubric.RUBRIC_VERSION,
+                       "states": {k: v["state"] for k, v in brief["signals"].items()}})  # fmt: skip
     db.commit()
-    snapshot = db.scalar(
-        select(SchoolSignalSnapshot).where(
-            SchoolSignalSnapshot.organization_id == org, SchoolSignalSnapshot.account_id == account_id,
-            SchoolSignalSnapshot.rubric_version == rubric.RUBRIC_VERSION, SchoolSignalSnapshot.input_digest == digest,
-        )
-    )  # fmt: skip
-    assert snapshot is not None  # noqa: S101  # inserted now or by the conflicting concurrent request
-    return snapshot, created is not None
+    return snapshot, True
+
+
+def _newest(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> SchoolSignalSnapshot | None:
+    return db.scalar(
+        select(SchoolSignalSnapshot)
+        .where(SchoolSignalSnapshot.organization_id == org, SchoolSignalSnapshot.account_id == account_id)
+        .order_by(SchoolSignalSnapshot.created_at.desc(), SchoolSignalSnapshot.id.desc())
+        .limit(1)
+    )
 
 
 def _citations(db: Session, org: uuid.UUID, snapshot: SchoolSignalSnapshot, now: datetime) -> dict[str, Any]:

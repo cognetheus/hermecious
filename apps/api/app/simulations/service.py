@@ -23,8 +23,10 @@ import csv
 import hashlib
 import io
 import json
+import time
 import uuid
-from datetime import datetime, time, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
@@ -41,7 +43,7 @@ from app.campaigns import service as campaign_service
 from app.campaigns.models import Campaign, CampaignAccount
 from app.contacts.models import Contact
 from app.core.clock import BUSINESS_TZ, Clock
-from app.core.errors import Conflict, NotFound
+from app.core.errors import Conflict, InvalidRequest, NotFound
 from app.core.settings import Settings
 from app.drafts.models import Draft
 from app.eligibility import policy
@@ -52,12 +54,15 @@ from app.simulations.models import SimulationItem, SimulationRun
 from app.simulations.transport import MAX_ATTEMPTS, FakeWhatsAppTransport
 
 JOB_TYPE, JOB_VERSION = "simulation.run", 1
+RUN_SECONDS = 45  # per attempt, inside the 60 s job lease; a retry resumes from the durable items
+MONOTONIC = time.monotonic
 SIMULATOR_VERSION = "simulator-1.0"
 MAX_ITEMS = 30
 LABEL = "SIMULATION ONLY — 0 real messages sent"
 TERMINAL = ("completed", "cancelled", "failed")
+# Reason code (after removing an `eligibility_` prefix) -> what is missing before real outreach.
 PREREQUISITES = {
-    "real opt-in": (
+    "real opt-in": {
         "no_opt_in_permission",
         "permission_unverified",
         "permission_revoked",
@@ -68,22 +73,41 @@ PREREQUISITES = {
         "consent_wording_outdated",
         "permission_changed",
         "suppressed",
-    ),
-    "official template approval": ("template_missing", "template_unverified", "template_rejected"),
-    "fresh evidence": (
+    },
+    "official template approval": {"template_missing", "template_unverified", "template_rejected"},
+    "fresh evidence": {
         "evidence_changed",
-        "cited_fact",
         "offer_changed",
         "offer_not_published",
         "assessment_superseded",
         "rules_changed",
-        "grounding_changed",
         "evidence_quality_gate_closed",
-    ),
-    "draft review": ("no_draft", "approval_"),
-    "campaign membership": ("not_approved_for_drafting", "excluded", "campaign_paused", "campaign_cancelled"),
-    "contact on record": ("no_contact",),
+        "draft_assessment_superseded",
+        "draft_offer_changed",
+        "account_archived",
+    },
+    "draft review": {
+        "no_draft",
+        "approval_not_reviewed",
+        "approval_rejected",
+        "approval_revoked",
+        "approval_expired",
+        "newer_revision_exists",
+    },
+    "campaign membership": {"not_approved_for_drafting", "excluded", "campaign_paused", "campaign_cancelled"},
+    "contact on record": {"no_contact"},
 }
+PREFIXED = {"cited_fact_": "fresh evidence", "grounding_changed_": "fresh evidence", "verifier_": "draft review"}
+
+
+def prerequisite(reason: str) -> str | None:
+    code = reason.removeprefix("eligibility_")
+    for name, codes in PREREQUISITES.items():
+        if code in codes:
+            return name
+    return next((name for prefix, name in PREFIXED.items() if code.startswith(prefix)), None)
+
+
 # Always outstanding before any real outreach, whatever this run shows.
 STANDING_BLOCKERS = (
     "official WhatsApp template approval (P5; fixtures are simulation only)",
@@ -131,21 +155,28 @@ def create_run(
     campaign = campaign_service._campaign(db, org, campaign_id, lock=True)
     if (prior := _replay(db, org, idempotency_key, digest)) is not None:
         return prior, False
+    mode = "fixture" if campaign.mode == "fixture" and environment != "production" else "readiness"
+    if mode == "readiness" and scenario != "all_allow":
+        raise InvalidRequest("scenarios alter fixture state only; a readiness run uses all_allow")
+    now = clock.now()
     active = db.scalar(
-        select(SimulationRun.id).where(
+        select(SimulationRun)
+        .where(
             SimulationRun.organization_id == org,
             SimulationRun.campaign_id == campaign.id,
             SimulationRun.status.in_(("pending", "running")),
         )
+        .with_for_update()
     )
-    if active is not None:
+    if active is not None and active.status == "running" and job_service.worker_gone(db, org, active.job_id):
+        _finish(db, active, "failed", now, error_code="worker_lost")  # orphaned: its worker died for good
+    elif active is not None:
         raise Conflict("a dry run is already active for this campaign; wait for it or cancel it")
-    now = clock.now()
     run = SimulationRun(
         organization_id=org,
         campaign_id=campaign.id,
         scenario=scenario,
-        mode="fixture" if campaign.mode == "fixture" and environment != "production" else "readiness",
+        mode=mode,
         status="pending",
         max_items=max_items,
         considered=0,
@@ -236,6 +267,8 @@ def cancel_run(db: Session, *, actor: Actor, clock: Clock, campaign_id: uuid.UUI
             ),
             {"now": now, "org": org, "job": run.job_id},
         )
+    elif job_service.worker_gone(db, org, run.job_id):  # orphaned: no worker will ever stop it
+        _finish(db, run, "cancelled", now, error_code="worker_lost")
     else:
         run.version += 1
         run.updated_at = now
@@ -256,8 +289,9 @@ def cancel_run(db: Session, *, actor: Actor, clock: Clock, campaign_id: uuid.UUI
 
 
 def handle_simulation_job(
-    db: Session, ctx: job_registry.JobContext, payload: Any, settings: Settings
+    db: Session, ctx: job_registry.JobContext, payload: Any, load_settings: Callable[[], Settings]
 ) -> dict[str, Any]:
+    """`load_settings` is called before every item, so a kill switch flipped mid-run applies immediately."""
     org, run_id = ctx.organization_id, uuid.UUID(str(payload.run_id))
     run = _lock(db, org, run_id)
     if run is None:
@@ -271,7 +305,7 @@ def handle_simulation_job(
     run.version += 1
     db.commit()
     try:
-        return _execute(db, ctx, run_id, settings)
+        return _execute(db, ctx, run_id, load_settings)
     except (job_registry.PermanentJobError, SimulatedWorkerCrash):
         raise
     except Exception:
@@ -285,7 +319,7 @@ def handle_simulation_job(
         return {"run_id": str(run_id), "run_status": "failed"}
 
 
-def candidates(db: Session, campaign: Campaign, limit: int, now: datetime) -> list[Account]:
+def candidates(db: Session, campaign: Campaign, limit: int, now: datetime) -> list[uuid.UUID]:
     """Members first (approved or excluded), then the other accounts the campaign preview considers."""
     org = campaign.organization_id
     members = set(
@@ -296,24 +330,33 @@ def candidates(db: Session, campaign: Campaign, limit: int, now: datetime) -> li
         )
     )
     previewed = {uuid.UUID(c.account_id) for c in campaign_service._candidates(db, campaign, now)}
-    pool = sorted(members | previewed, key=lambda a: (a not in members, str(a)))[:limit]
-    found = {a.id: a for a in db.scalars(select(Account).where(Account.organization_id == org, Account.id.in_(pool)))}
-    return [found[a] for a in pool if a in found]
+    return sorted(members | previewed, key=lambda a: (a not in members, str(a)))[:limit]
 
 
 def _evaluation_time(run: SimulationRun) -> datetime:
-    if run.scenario == "quiet_hours":  # 19:00 Asia/Karachi on the request's local day: outside business hours
-        day = run.evaluated_at.astimezone(BUSINESS_TZ).date()
-        return datetime.combine(day, time(19, 0), BUSINESS_TZ).astimezone(run.evaluated_at.tzinfo)
-    return run.evaluated_at
+    """`quiet_hours`: the request time if it is already outside business hours, else that day's closing time
+    (Asia/Karachi), which is at most 9 hours ahead and never in the past."""
+    at = run.evaluated_at
+    if run.scenario != "quiet_hours" or policy.next_open(at) != at:
+        return at
+    day = at.astimezone(BUSINESS_TZ).date()
+    return datetime.combine(day, policy.WORK_END, BUSINESS_TZ).astimezone(at.tzinfo)
 
 
-def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, settings: Settings) -> dict[str, Any]:
+def _execute(
+    db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, load_settings: Callable[[], Settings]
+) -> dict[str, Any]:
     org = ctx.organization_id
-    run = db.get(SimulationRun, run_id)
+    started = MONOTONIC()
+    run = _lock(db, org, run_id)
     assert run is not None  # noqa: S101
     campaign = campaign_service._campaign(db, org, run.campaign_id)
-    pool = candidates(db, campaign, run.max_items, run.evaluated_at)
+    if run.account_ids is None:  # frozen at the first attempt so retries see the same candidates and seq
+        run.account_ids = [str(a) for a in candidates(db, campaign, run.max_items, run.evaluated_at)]
+    db.commit()
+    ids = [uuid.UUID(a) for a in run.account_ids]
+    accounts = {a.id: a for a in db.scalars(select(Account).where(Account.organization_id == org, Account.id.in_(ids)))}
+    pool = [accounts[a] for a in ids if a in accounts]
     transport = FakeWhatsAppTransport(run.scenario)
     now = _evaluation_time(run)
     done = {
@@ -322,7 +365,7 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, setti
             select(SimulationItem).where(SimulationItem.organization_id == org, SimulationItem.run_id == run_id)
         )
     }
-    simulated_opt_outs: set[uuid.UUID] = set()
+    opt_outs = OptOuts(run.scenario)
     for seq, account in enumerate(pool, start=1):
         if account.id in done:
             continue  # recorded by an earlier attempt: one logical result per account
@@ -330,8 +373,11 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, setti
             break
         if run.scenario == "worker_restart_mock" and ctx.attempt == 1 and seq > (len(pool) + 1) // 2:
             raise SimulatedWorkerCrash("worker_restart_mock")
+        if MONOTONIC() - started > RUN_SECONDS:
+            raise job_registry.TransientJobError("time_budget")  # the next attempt resumes after durable items
         accepted_so_far = sum(1 for r in done.values() if r.bucket == "accepted")
-        item = _item(db, run, campaign, account, seq, now, settings, transport, accepted_so_far, simulated_opt_outs)
+        settings = load_settings()
+        item = _item(db, run, campaign, account, seq, now, settings, transport, accepted_so_far, opt_outs)
         db.add(item)
         db.commit()  # per-item progress is durable
         done[account.id] = item
@@ -344,6 +390,21 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, setti
     return {"run_id": str(run_id), "run_status": status, "considered": run.considered}
 
 
+class OptOuts:
+    """`opt_out_mid_run`: a simulated STOP from the second recipient that reaches the contact stage."""
+
+    def __init__(self, scenario: str) -> None:
+        self.active = scenario == "opt_out_mid_run"
+        self.reached = 0
+        self.contacts: set[uuid.UUID] = set()
+
+    def suppressed(self, contact_id: uuid.UUID) -> bool:
+        self.reached += 1
+        if self.active and self.reached == 2:
+            self.contacts.add(contact_id)
+        return contact_id in self.contacts
+
+
 def _item(
     db: Session,
     run: SimulationRun,
@@ -354,7 +415,7 @@ def _item(
     settings: Settings,
     transport: FakeWhatsAppTransport,
     accepted_so_far: int,
-    simulated_opt_outs: set[uuid.UUID],
+    opt_outs: OptOuts,
 ) -> SimulationItem:
     org = run.organization_id
     item = SimulationItem(
@@ -405,9 +466,7 @@ def _item(
     contact_id = uuid.UUID(review["contact_id"])
     item.contact_id, item.approval_id = contact_id, uuid.UUID(review["id"])
     item.content_digest = review["content_digest"]
-    if run.scenario == "opt_out_mid_run" and seq == 2:
-        simulated_opt_outs.add(contact_id)  # a simulated STOP arrives just before this recipient
-    if contact_id in simulated_opt_outs:
+    if opt_outs.suppressed(contact_id):
         item.reasons = ["suppressed", "simulated_opt_out"]
         return item
     offset = policy.DAILY_CAP - 1 if run.scenario == "quota" else 0
@@ -461,7 +520,10 @@ def _finish(db: Session, run: SimulationRun, status: str, now: datetime, error_c
     run.status, run.finished_at, run.updated_at, run.error_code = status, now, now, error_code
     run.considered = len(items)
     run.report_json = report
-    run.report_digest = _digest(report)
+    # Covers every item's outcome (not run-specific receipts), so equal states give equal digests.
+    run.report_digest = _digest(
+        [report, [(str(i.account_id), i.bucket, i.reasons, i.lifecycle, i.attempts) for i in items]]
+    )
     run.version += 1
     db.commit()
 
@@ -485,9 +547,8 @@ def build_report(run: SimulationRun, items: list[SimulationItem]) -> dict[str, A
     failed = sum(1 for i in items if i.lifecycle == "sim_failed")
     prerequisites: dict[str, int] = {}
     for item in items:
-        for name, needles in PREREQUISITES.items():
-            if any(any(r == n or r.startswith(n) or n in r for n in needles) for r in item.reasons):
-                prerequisites[name] = prerequisites.get(name, 0) + 1
+        for name in sorted({p for r in item.reasons if (p := prerequisite(r))}):
+            prerequisites[name] = prerequisites.get(name, 0) + 1
     assert sum(buckets.values()) == considered  # noqa: S101  # every item is in exactly one bucket
     return {
         "label": LABEL,

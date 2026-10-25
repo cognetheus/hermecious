@@ -14,8 +14,10 @@ import re
 from dataclasses import dataclass
 
 _KEY_ID = re.compile(r"[a-z0-9_-]{1,16}")
-_E164 = re.compile(r"\+[1-9]\d{7,14}")
-_PK_LOCAL = re.compile(r"0(3\d{9})")
+# ASCII digits only: `\d` would also accept Urdu/Arabic digits, giving the same number a different digest.
+_E164 = re.compile(r"\+[1-9][0-9]{7,14}")
+_PK_LOCAL = re.compile(r"0(3[0-9]{9})")
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
 class KeyringError(ValueError):
@@ -49,7 +51,7 @@ def parse_keyring(raw: str) -> Keyring:
 
 def canonical(raw: str) -> str:
     """Strict E.164. Spaces, dashes, dots and brackets are ignored; Pakistani `03xx…` becomes `+923xx…`."""
-    compact = re.sub(r"[\s\-.()]", "", raw)
+    compact = re.sub(r"[\s\-.()]", "", raw.translate(_DIGITS))
     if compact.startswith("00"):
         compact = "+" + compact[2:]
     if local := _PK_LOCAL.fullmatch(compact):

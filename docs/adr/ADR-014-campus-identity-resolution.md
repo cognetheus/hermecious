@@ -1,6 +1,6 @@
 # ADR-014: Campus identity is resolved by a deterministic matcher that only suggests; humans decide, and decisions are reversible
 
-- **Status:** Accepted
+- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
 - **Date:** 2026-10-24
 - **Source:** Batch 04 §P2.3; `OPUS_P2.3_PROMPT.md`
 

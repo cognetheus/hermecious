@@ -583,3 +583,38 @@ def test_elig_10_kill_switch_pause_exclusion_stale_state_and_zero_send_capabilit
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
     assert not {t for t in tables if any(w in t for w in ("message", "send", "outbound", "delivery"))}
     assert counts(app) == before
+
+
+# --- Audit follow-ups (2026-10-25) --------------------------------------------------------------------------------
+
+
+def test_audit_concurrent_duplicate_contacts_conflict_instead_of_500(
+    app: FastAPI, client: TestClient, org: Org, operator: str
+) -> None:
+    _campaign, account, _offer = approved(app, client, org, operator)
+    statuses: list[int] = []
+    barrier = threading.Barrier(2)
+
+    def add(number: str) -> None:
+        local = TestClient(app, raise_server_exceptions=False)
+        token = logged_in(local, "operator@r.example")
+        barrier.wait(timeout=10)
+        statuses.append(add_contact(local, token, account, number).status_code)
+
+    threads = [threading.Thread(target=add, args=(n,)) for n in ("+92 000 0000177", "+92۰۰۰۰۰۰۰۱۷۷")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert sorted(statuses) == [201, 409]  # one number, whatever digits it was typed in
+
+
+def test_audit_a_renamed_real_account_never_gets_fixture_trust(
+    app: FastAPI, client: TestClient, org: Org, operator: str, owner: tuple[TestClient, str]
+) -> None:
+    renamed = plain_account(app, org, "Real Lahore School (Synthetic)")  # name says synthetic; sources do not
+    contact = add_contact(client, operator, renamed, "+92 000 0000178").json()["id"]
+    permission = record(client, operator, contact).json()["permission_id"]
+    assert review(owner[0], owner[1], contact, permission).status_code == 201
+    blocked = evaluate(client, operator, contact, template_ref=TEMPLATE)
+    assert "fixture_requires_synthetic_account_outside_production" in codes(blocked)

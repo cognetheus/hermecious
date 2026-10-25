@@ -147,3 +147,19 @@ def test_digest_tracks_offer_revision_and_deferral_validity() -> None:
     republished = replace(OFFER, revision_id="r-2")
     assert rubric.input_digest("d" * 64, republished, facts, NOW) != base
     assert rubric.input_digest("d" * 64, OFFER, facts, NOW + timedelta(days=3)) != base
+
+
+def test_audit_impossible_deferral_dates_are_refused_and_stored_ones_never_crash() -> None:
+    from app.accounts.claims import parse_claim  # noqa: PLC0415
+
+    with pytest.raises(ValueError):
+        parse_claim("review_deferral", {"reason": "budget_cycle", "until": "2026-02-30"})
+    bad = fact("review_deferral", {"reason": "budget_cycle", "until": "2026-02-30"})  # e.g. stored before the fix
+    assert rubric._deferred(bad, NOW) is False
+
+
+def test_audit_deferral_ends_on_the_asia_karachi_day() -> None:
+    until = fact("review_deferral", {"reason": "budget_cycle", "until": "2026-10-24"})
+    late_utc = datetime(2026, 10, 23, 20, 0, tzinfo=UTC)  # already 01:00 on 24 October in Asia/Karachi
+    assert rubric._deferred(until, late_utc) is False
+    assert rubric._deferred(until, datetime(2026, 10, 23, 18, 0, tzinfo=UTC)) is True  # 23:00 on the 23rd
