@@ -46,6 +46,7 @@ from app.discovery.models import (
     DiscoveryReviewDecision,
     DiscoveryRun,
     DiscoveryRunCandidate,
+    SourceImport,
 )
 from app.discovery.runner import DiscoveryBudget, run_discovery
 from app.jobs import registry as job_registry
@@ -74,6 +75,10 @@ class RunBudget(BaseModel):
     max_search_pages: int = Field(default=5, ge=1, le=5)
     max_fetches: int = Field(default=20, ge=0, le=20)
     max_seconds: int = Field(default=MAX_RUN_SECONDS, ge=5, le=MAX_RUN_SECONDS)
+    seed_import_id: uuid.UUID | None = None  # only for the operator CSV source: which staged import to review
+
+    def dump(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 @dataclass(frozen=True)
@@ -93,12 +98,17 @@ def _options(settings: Settings) -> list[SourceOption]:
                      "Lahore: synthetic fixture dataset", True, fixture),
         SourceOption(osm.PROVIDER, "OpenStreetMap school listings (Overpass)",
                      f"Lahore: operator-configured box ({citation})", False, osm.descriptor_from_settings(settings)),
+        SourceOption(seed_import.PROVIDER, "Operator CSV seed import (user-provided, not independently verified)",
+                     "Lahore: operator-supplied list", False, seed_import.DESCRIPTOR),
     ]  # fmt: skip
 
 
 def source_refusal(option: SourceOption, environment: str, now: datetime) -> str | None:
     try:
         registry.check_descriptor(option.descriptor, environment, now=now)
+        if option.provider == seed_import.PROVIDER:  # nothing is fetched: rows were staged by an import
+            registry.require_operation(option.descriptor, Operation.STORE_METADATA)
+            return None
         registry.require_operation(option.descriptor, Operation.SEARCH)
         registry.require_operation(option.descriptor, Operation.FETCH)
     except registry.SourcePolicyError as exc:
@@ -141,7 +151,7 @@ def create_run(
     """Returns (run, created). Same key + same request replays; same key + different request is 409."""
     account_service._require(actor, Capability.MUTATE)
     org = actor.organization_id
-    request = {"provider": provider, "budget": budget.model_dump(), "city": CITY, "vertical": VERTICAL}
+    request = {"provider": provider, "budget": budget.dump(), "city": CITY, "vertical": VERTICAL}
     digest = job_registry.digest(request)
 
     def replay() -> DiscoveryRun | None:
@@ -167,11 +177,25 @@ def create_run(
     descriptor = option.descriptor
     if budget.max_candidates > descriptor.result_limit:
         raise InvalidRequest("max_candidates exceeds this source's limit")
+    if (provider == seed_import.PROVIDER) != (budget.seed_import_id is not None):
+        raise InvalidRequest("seed_import_id is required for, and only for, the operator CSV source")
+    if (
+        budget.seed_import_id is not None
+        and db.scalar(
+            select(SourceImport.id).where(
+                SourceImport.organization_id == org,
+                SourceImport.id == budget.seed_import_id,
+                SourceImport.provider == seed_import.PROVIDER,
+            )
+        )
+        is None
+    ):
+        raise NotFound()
     run = DiscoveryRun(
         organization_id=org, created_by=actor.user_id, vertical_slug=VERTICAL, city=CITY,
         area_label=option.area_label[:300], provider=provider, adapter_version=descriptor.adapter_version,
         rights_policy_version=str(descriptor.rights_policy_version), attribution=descriptor.attribution,
-        budget_json=budget.model_dump(), usage_json={}, status="pending", examined_count=0, staged_count=0,
+        budget_json=budget.dump(), usage_json={}, status="pending", examined_count=0, staged_count=0,
         rejected_count=0, displayed_count=0, truncated=False, idempotency_key=idempotency_key, request_digest=digest,
         version=1, created_at=now, updated_at=now,
     )  # fmt: skip
@@ -184,7 +208,7 @@ def create_run(
         )  # fmt: skip
         run.job_id = receipt.job_id
         management._audit(db, actor, clock, "discovery.run_requested", run.id,
-                          {"provider": provider, "budget": budget.model_dump(), "job_id": str(receipt.job_id)},
+                          {"provider": provider, "budget": budget.dump(), "job_id": str(receipt.job_id)},
                           target_type="discovery_run")  # fmt: skip
         db.commit()
     except IntegrityError:
@@ -285,7 +309,8 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID) -> di
     budget = run.budget_json
     query = SourceQuery(city=run.city, vertical_slug=run.vertical_slug)
 
-    def should_continue() -> bool:
+    def should_continue() -> bool:  # called before every adapter call
+        job_registry.keep_alive(ctx)
         requested = db.scalar(
             select(DiscoveryRun.requested_cancel_at).where(
                 DiscoveryRun.organization_id == org, DiscoveryRun.id == run_id
@@ -293,6 +318,8 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID) -> di
         )
         return requested is None
 
+    if run.provider == seed_import.PROVIDER:
+        return _execute_seed_review(db, ctx, run_id, actor, clock)
     try:
         adapter = build_adapter(run.provider, settings)
         report = run_discovery(
@@ -619,6 +646,63 @@ def review_candidate(
             return prior
         raise Conflict("this candidate changed since you loaded it; reload and decide again") from None
     return ReviewResult(row, account_id, False, converged, decision.id)
+
+
+def _execute_seed_review(
+    db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID, actor: Actor, clock: Clock
+) -> dict[str, Any]:
+    """A review run over rows an operator CSV import already staged: nothing is fetched or re-staged.
+
+    Rows go through the same identity matching, rights checks and reviewer decisions as any other run.
+    """
+    org = ctx.organization_id
+    run = db.get(DiscoveryRun, run_id)
+    assert run is not None  # noqa: S101
+    limit = min(int(run.budget_json["max_candidates"]), 30)
+    staged = list(
+        db.scalars(
+            select(DiscoveryCandidate.id)
+            .where(
+                DiscoveryCandidate.organization_id == org,
+                DiscoveryCandidate.provider == seed_import.PROVIDER,
+                DiscoveryCandidate.source_import_id == uuid.UUID(run.budget_json["seed_import_id"]),
+                DiscoveryCandidate.status.not_in(("admitted", "rejected")),
+            )
+            .order_by(DiscoveryCandidate.created_at, DiscoveryCandidate.id)
+            .limit(limit + 1)
+        )
+    )
+    for position, candidate_id in enumerate(staged[:limit]):
+        db.execute(
+            insert(DiscoveryRunCandidate)
+            .values(id=uuid.uuid4(), organization_id=org, run_id=run_id, candidate_id=candidate_id,
+                    position=position, display_status="pending", version=1, created_at=ctx.now)
+            .on_conflict_do_nothing(index_elements=["organization_id", "run_id", "candidate_id"])
+        )  # fmt: skip
+    db.commit()
+    resolution = resolution_service.run_resolution(db, actor=actor, clock=clock)
+    run = _lock_or_fail(db, org, run_id)
+    if run.status != "running":
+        return {"run_id": str(run_id), "run_status": run.status, "skipped": True}
+    shown = min(len(staged), limit)
+    truncated = len(staged) > limit
+    return _finish(
+        run, "completed", ctx.now, examined_count=shown, staged_count=0, rejected_count=0, displayed_count=shown,
+        truncated=truncated, stop_reason="candidate_cap" if truncated else "completed",
+        usage_json={"identity_pairs_considered": resolution.pairs_considered,
+                    "identity_suggestions_created": resolution.created},
+    )  # fmt: skip
+
+
+def seed_imports(db: Session, org: uuid.UUID) -> list[SourceImport]:
+    return list(
+        db.scalars(
+            select(SourceImport)
+            .where(SourceImport.organization_id == org, SourceImport.provider == seed_import.PROVIDER)
+            .order_by(SourceImport.imported_at.desc())
+            .limit(50)
+        )
+    )
 
 
 def _admit_new(db: Session, actor: Actor, clock: Clock, candidate: DiscoveryCandidate, run_id: uuid.UUID) -> uuid.UUID:

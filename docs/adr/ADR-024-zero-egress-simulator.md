@@ -1,6 +1,6 @@
 # ADR-024: Dry runs are bounded, fresh-checked simulations with a fake transport and a database-enforced zero
 
-- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
+- **Status:** Accepted on 2026-10-25 by owner delegation (the owner instructed "you decide and go ahead" after reviewing the audit; recorded in EXECUTION_LEDGER.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P4.5_PROMPT.md`; blueprint §4 P4.4–P4.5. Batch 07 is absent from the repository.
 

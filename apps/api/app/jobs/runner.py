@@ -11,6 +11,7 @@ Guarantees (and their limits):
 - Redis is optional: notifications only shorten the wait; DB polling always runs.
 """
 
+import functools
 import logging
 import random
 import uuid
@@ -104,6 +105,23 @@ def claim_due_jobs(db: Session, *, worker_id: str, max_items: int, now: datetime
     return [ClaimedJob(*row) for row in rows]
 
 
+def renew_lease(
+    factory: sessionmaker[Session], job_id: uuid.UUID, lease_token: uuid.UUID, now_fn: Callable[[Session], datetime]
+) -> bool:
+    """Fenced heartbeat in its own short transaction: True if our lease was extended, False if it was lost."""
+    with factory() as db:
+        now = now_fn(db)
+        renewed = db.scalar(
+            text(
+                "UPDATE jobs SET lease_expires_at = :now + :lease, updated_at = :now"
+                " WHERE id = :id AND lease_token = :token AND status = 'running' RETURNING id"
+            ),
+            {"now": now, "lease": LEASE, "id": job_id, "token": lease_token},
+        )
+        db.commit()
+        return renewed is not None
+
+
 def complete_job(db: Session, *, job_id: uuid.UUID, lease_token: uuid.UUID, result_digest: str, now: datetime) -> None:
     """Fenced success in the caller's transaction (the same one as the job's effect)."""
     result = db.execute(
@@ -170,7 +188,15 @@ def execute(
             spec = registry.resolve(job.job_type, job.schema_version, environment)
             payload = spec.payload_model.model_validate(job.payload)
             now = now_fn(db)
-            ctx = registry.JobContext(job.id, job.organization_id, job.attempts, now, environment, job.max_attempts)
+            ctx = registry.JobContext(
+                job.id,
+                job.organization_id,
+                job.attempts,
+                now,
+                environment,
+                job.max_attempts,
+                functools.partial(renew_lease, factory, job.id, job.lease_token, now_fn),
+            )
             result = spec.handler(db, ctx, payload)
             complete_job(db, job_id=job.id, lease_token=job.lease_token, result_digest=registry.digest(result), now=now)
             db.commit()

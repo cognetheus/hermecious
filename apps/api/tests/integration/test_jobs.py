@@ -641,3 +641,30 @@ def test_notification_backoff_grows_per_failed_delivery(
         clock.advance(event.next_attempt_at - clock.now() + timedelta(milliseconds=1))
     for delay, base in zip(delays, [2, 4, 8, 16], strict=True):  # first failure = attempt 1 -> 2s base
         assert base * 0.8 <= delay <= base * 1.2, delays
+
+
+# --- Lease heartbeat (2026-10-25 audit decision) ------------------------------------------------------------------
+
+
+def test_lease_heartbeat_extends_only_our_lease_and_stops_a_superseded_worker(
+    factory: sessionmaker[Session], clock: FixedClock, org: Org
+) -> None:
+    with factory() as session:
+        jobs.enqueue_job(
+            session, organization_id=org.actor.organization_id, environment="test", job_type="diagnostic.noop",
+            schema_version=1, payload={"note": "lease"}, idempotency_key="lease-heartbeat-0001", clock=clock,
+        )  # fmt: skip
+        session.commit()
+    with factory() as session:
+        (claimed,) = runner.claim_due_jobs(session, worker_id="worker-a", max_items=1, now=clock.now())
+    clock.advance(timedelta(seconds=50))  # a long step: the lease (60 s) is nearly gone
+    assert runner.renew_lease(factory, claimed.id, claimed.lease_token, clock_now(clock)) is True
+    with factory() as session:
+        job = session.get(Job, claimed.id)
+        assert job is not None and job.lease_expires_at == clock.now() + runner.LEASE
+    stale = runner.renew_lease(factory, claimed.id, uuid.uuid4(), clock_now(clock))
+    assert stale is False  # someone else's token never extends the lease
+    ctx = registry.JobContext(claimed.id, org.actor.organization_id, 1, clock.now(), "test", 3, lambda: False)
+    with pytest.raises(registry.LeaseLostError):
+        registry.keep_alive(ctx)
+    registry.keep_alive(registry.JobContext(claimed.id, org.actor.organization_id, 1, clock.now()))  # no-op

@@ -27,11 +27,11 @@ The owner can import a list their organization already holds, such as a director
    {"source_label": "...", "permission_declaration": "where the list came from and why you may use it", "csv_text": "..."}
    ```
 
-   The UI arrives in P2.4.
-
 3. **Read the response.**
    - It reports accepted and rejected counts, and rejection reasons by **row number**. Row content is never echoed.
    - Re-posting the same file returns `replayed: true` and changes nothing.
+
+4. **Review the rows (owner or operator).** Open **Discovery → New run**, choose **Operator CSV seed import**, and pick the import. The run fetches nothing: it lists up to 30 of that import's unreviewed rows, runs identity matching, and lets a reviewer admit, attach, reject or defer each one, exactly like any other run (ADR-025). Each row keeps its `source_reference` in its attribution. Rows are user-provided and are never shown as verified.
 
 ## Live source: OpenStreetMap via Overpass (owner opt-in only)
 

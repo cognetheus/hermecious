@@ -181,8 +181,19 @@ def list_sources(actor: CurrentActor, clock: AppClock, settings: AppSettings) ->
         }
         for o in runs.available_sources(settings, clock.now())
     ]  # fmt: skip
-    ceilings = runs.RunBudget().model_dump()
+    ceilings = runs.RunBudget().dump()
     return JSONResponse({"sources": items, "budget_ceilings": ceilings, "city": runs.CITY}, headers=NO_STORE)
+
+
+@router.get("/seed-imports")
+def list_seed_imports(actor: CurrentActor, db: DbSession) -> JSONResponse:
+    """Operator CSV imports that a review run can be started for (user-provided, not verified)."""
+    items = [
+        {"id": str(i.id), "source_label": i.source_label, "accepted_count": i.accepted_count,
+         "rejected_count": i.rejected_count, "imported_at": _iso(i.imported_at)}
+        for i in runs.seed_imports(db, actor.organization_id)
+    ]  # fmt: skip
+    return JSONResponse({"items": items}, headers=NO_STORE)
 
 
 @router.post("/runs", status_code=202)

@@ -44,6 +44,12 @@ class PermanentJobError(JobError):
     error_class = "permanent_error"
 
 
+class LeaseLostError(TransientJobError):
+    """Another worker owns this job now (our lease expired): stop; the fenced completion is refused anyway."""
+
+    error_class = "lease_lost"
+
+
 class PayloadRejected(ValueError):
     """Enqueue refused: unknown type/version, invalid, oversized or sensitive payload. Message is safe."""
 
@@ -56,6 +62,17 @@ class JobContext:
     now: datetime
     environment: str | None = None  # P2.4: handlers that select providers re-check policy for this environment
     max_attempts: int = 1
+    renew_lease: Callable[[], bool] | None = None  # fenced heartbeat; None outside the runner (direct calls)
+
+
+def keep_alive(ctx: JobContext) -> None:
+    """Extend this attempt's lease before more long-running work (pages, sources, items).
+
+    Leases are short (60 s) so a dead worker's job is rescued quickly; a live worker renews between steps instead
+    of racing its own lease. If the lease was already taken over, stop: our completion would be refused anyway.
+    """
+    if ctx.renew_lease is not None and not ctx.renew_lease():
+        raise LeaseLostError()
 
 
 class _Payload(BaseModel):

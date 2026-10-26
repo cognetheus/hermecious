@@ -58,7 +58,7 @@ def key() -> str:
     return f"run-{uuid.uuid4().hex[:16]}"
 
 
-def start(client: TestClient, csrf: str, provider: str = FIXTURE, **budget: int) -> Any:
+def start(client: TestClient, csrf: str, provider: str = FIXTURE, **budget: Any) -> Any:
     body = {"provider": provider, "budget": {"max_candidates": 30, **budget}, "idempotency_key": key()}
     return client.post("/api/v1/discovery/runs", json=body, headers=mutation_headers(csrf))
 
@@ -99,7 +99,8 @@ def test_run_01_operator_start_commits_run_job_and_outbox_atomically(
     app: FastAPI, client: TestClient, operator: str
 ) -> None:
     sources = client.get("/api/v1/discovery/sources").json()
-    assert [s["provider"] for s in sources["sources"]] == [FIXTURE]  # OSM is not offered while unreviewed
+    offered = [s["provider"] for s in sources["sources"]]
+    assert offered == [FIXTURE, "operator_seed_csv"]  # OSM is not offered while unreviewed; CSV review always is
     assert sources["budget_ceilings"] == {"max_candidates": 30, "max_search_pages": 5, "max_fetches": 20,
                                           "max_seconds": 45}  # fmt: skip
     created = start(client, operator, max_candidates=10, max_seconds=30)
@@ -564,3 +565,43 @@ def test_audit_confirmed_same_campus_pair_is_admitted_once_and_osm_rights_are_re
     twin = decide(client, csrf, run["id"], items[1], "accept_new")
     assert twin.status_code == 200 and count(app, Account) == 1  # joined, never duplicated
     assert twin.json()["account_id"] == first.json()["account_id"]
+
+
+SEED_CSV = (
+    "school_name,city,locality,source_reference\n"
+    "Synthetic Seed Grammar (test),Lahore,Johar Town,Owner directory p.20\n"
+    "Synthetic Seed Model (test),Lahore,Gulberg,Owner directory p.21\n"
+)
+
+
+def test_seed_review_run_makes_operator_csv_rows_reviewable_and_admittable(
+    app: FastAPI, client: TestClient, operator: str
+) -> None:
+    """P2.2's CSV fallback reaches P2.4 admission: a review run over one import's staged rows, nothing fetched."""
+    owner = TestClient(app, raise_server_exceptions=False)
+    csrf = logged_in(owner, "owner@runs.example")
+    imported = owner.post(
+        "/api/v1/discovery/seed-imports",
+        json={"source_label": "Owner directory", "csv_text": SEED_CSV,
+              "permission_declaration": "Typed by our own staff from a printed directory we own; internal use."},
+        headers=mutation_headers(csrf),
+    )  # fmt: skip
+    assert imported.status_code == 201, imported.text
+    import_id = imported.json()["import_id"]
+    listed = client.get("/api/v1/discovery/seed-imports").json()["items"]
+    assert [i["id"] for i in listed] == [import_id]
+    seed = "operator_seed_csv"
+    assert start(client, operator, provider=seed).status_code == 400  # which import?
+    assert start(client, operator, seed_import_id=import_id).status_code == 400  # not for other sources
+    assert start(client, operator, provider=seed, seed_import_id=str(uuid.uuid4())).status_code == 404
+    created = start(client, operator, provider=seed, seed_import_id=import_id)
+    assert created.status_code == 202, created.text
+    assert [o.status for o in worker(app).run_once()] == ["succeeded"]
+    run_id = created.json()["id"]
+    run = client.get(f"/api/v1/discovery/runs/{run_id}").json()
+    assert (run["status"], run["displayed_count"]) == ("completed", 2)
+    items = client.get(f"/api/v1/discovery/runs/{run_id}/candidates").json()["items"]
+    assert {i["display_name"] for i in items} == {"Synthetic Seed Grammar (test)", "Synthetic Seed Model (test)"}
+    admitted = decide(client, operator, run_id, items[0], "accept_new")
+    assert admitted.status_code == 200, admitted.text
+    assert count(app, Account) == 1

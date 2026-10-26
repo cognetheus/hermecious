@@ -2270,3 +2270,32 @@ The "settings read once per run" mutant was first caught incidentally (a `NameEr
   - ratify the P2.3 fixture-only exception;
   - decide on CSV-seed admission and on job-lease heartbeats before live OSM;
   - set `HERMECIOUS_CONTACT_HMAC_SECRETS` in the local `.env`.
+
+## Owner decisions after the audit (2026-10-25)
+
+**Owner instruction (verbatim):** "you decide and go ahead". The owner delegated the open decisions listed at the end of the audit entry. Each decision below is recorded as taken under that delegation.
+
+| Decision | Taken | Evidence |
+|---|---|---|
+| ADR-013 to ADR-024 | **Accepted** by owner delegation; each ADR's status line says so | `docs/adr/ADR-013…024` |
+| P2.3 fixture-only prerequisite exception | **Ratified** by owner delegation | this entry |
+| CSV seed admission | **Enabled through seed review runs** (ADR-025): the CSV import is a run source that lists one import's unreviewed rows; review and admission are unchanged; `GET /api/v1/discovery/seed-imports` feeds the new-run picker | `test_seed_review_run_makes_operator_csv_rows_reviewable_and_admittable` (no import → 400, wrong source → 400, foreign or unknown import → 404, run → 2 rows → `accept_new` → 1 account); RUN-01 source list updated |
+| Job-lease heartbeat before live OSM | **Implemented** (ADR-025): fenced `renew_lease` per job; `keep_alive` before each discovery adapter call, research source and simulator item; a lost lease stops the handler | `test_lease_heartbeat_extends_only_our_lease_and_stops_a_superseded_worker` (+50 s → renewed to now + 60 s; foreign token → no renewal; lost lease → `LeaseLostError`) |
+| Local contact key | **Set** in the developer `.env`: `dev1` key generated with `openssl rand -hex 32`, never printed, file mode 600 | API restarted; key id `dev1` loads |
+| Re-observed rejected listing | **Reopened for review** when its content changes (a revision); unchanged content stays rejected | staging revision path |
+
+**Left as recorded, by decision:**
+- **Superseded suggestions do not reopen.** Resolver evidence changes are recorded instead.
+- **The research per-source timeout** waits until a live fetcher is authorized; only the instant fixture fetcher exists.
+- **Manual facts keep expiry and storage rights only.** They have no provider descriptor.
+- **Contact endpoints outside production still answer 503 without the key.** The developer key is now set.
+- **The SIM-10 e2e cancel and the APPROVAL-10 e2e job assertions stay API-level.** ELIG-08 caps are now exercised in integration by SIM-05 `quota`.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` | 0 | 16/16 PASS. Unit + contract **388**; integration **398** (+2); web 2; **e2e 30 + 11** |
+| First run of the new discovery tests | 1 | RUN-01 asserted the offered source list was only the fixture; the CSV review source is now offered too. The assertion was updated |
+
+**Production outreach-readiness: still NO.** P3.4 EVAL-07 (real audit) is still blocked, there is no real opt-in, and there are no provider templates. Live OSM still needs the owner's rights review settings.

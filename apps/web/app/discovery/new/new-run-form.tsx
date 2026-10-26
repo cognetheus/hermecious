@@ -8,9 +8,14 @@ import { errorMessage, postJson } from "../../../lib/mutate";
 
 type Ceilings = { max_candidates: number; max_search_pages: number; max_fetches: number; max_seconds: number };
 
-export default function NewRunForm({ sources, ceilings, city }: { sources: SourceOption[]; ceilings: Ceilings; city: string }) {
+export type SeedImport = { id: string; source_label: string; accepted_count: number; imported_at: string };
+const SEED_PROVIDER = "operator_seed_csv";
+
+export default function NewRunForm({ sources, ceilings, city, seedImports }: { sources: SourceOption[]; ceilings: Ceilings; city: string; seedImports: SeedImport[] }) {
   const router = useRouter();
   const [provider, setProvider] = useState(sources[0].provider);
+  const [seedImport, setSeedImport] = useState(seedImports[0]?.id ?? "");
+  const isSeed = provider === SEED_PROVIDER;
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   // One key per form instance: a double submit replays the same run instead of starting two.
@@ -33,6 +38,7 @@ export default function NewRunForm({ sources, ceilings, city }: { sources: Sourc
           max_search_pages: number("max_search_pages"),
           max_fetches: number("max_fetches"),
           max_seconds: number("max_seconds"),
+          ...(isSeed ? { seed_import_id: seedImport } : {}),
         },
       });
       if (result.ok) {
@@ -57,6 +63,23 @@ export default function NewRunForm({ sources, ceilings, city }: { sources: Sourc
           ))}
         </select>
       </p>
+      {isSeed ? (
+        <p>
+          <label htmlFor="run-seed-import">Seed import</label>{" "}
+          {seedImports.length > 0 ? (
+            <select id="run-seed-import" value={seedImport} onChange={(e) => setSeedImport(e.target.value)}>
+              {seedImports.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.source_label} ({i.accepted_count} rows)
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span role="alert">No CSV seed import yet. Import one through the API first.</span>
+          )}{" "}
+          Rows are user-provided and not independently verified; nothing is fetched.
+        </p>
+      ) : null}
       <section aria-label="Source rights">
         <h2>Area and rights</h2>
         <p>
@@ -84,7 +107,7 @@ export default function NewRunForm({ sources, ceilings, city }: { sources: Sourc
           <input id="run-max-seconds" name="max_seconds" type="number" min={5} max={ceilings.max_seconds} defaultValue={ceilings.max_seconds} required />
         </p>
       </fieldset>
-      <button type="submit" disabled={pending}>
+      <button type="submit" disabled={pending || (isSeed && !seedImport)}>
         {pending ? "Starting…" : "Start run"}
       </button>
       {error !== null && <p role="alert">{error}</p>}

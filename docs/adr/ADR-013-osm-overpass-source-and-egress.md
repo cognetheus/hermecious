@@ -1,6 +1,6 @@
 # ADR-013: First live source is OpenStreetMap via Overpass, behind one pinned egress client; CSV seeds are the fallback
 
-- **Status:** Proposed — implemented and verified, awaiting owner acceptance (AGENTS.md). **Live activation is the owner's decision** and is not made by this ADR.
+- **Status:** Accepted on 2026-10-25 by owner delegation (the owner instructed "you decide and go ahead" after reviewing the audit; recorded in EXECUTION_LEDGER.md)
 - **Date:** 2026-10-24
 - **Source:** Batch 04 §P2.2 and §5.1; `OPUS_P2.2_PROMPT.md`; ADR-012
 

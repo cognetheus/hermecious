@@ -124,6 +124,8 @@ def stage_candidate(
     row.payload_digest = digest
     row.revision += 1
     row.updated_at = now
+    if row.status == "rejected":  # the source now says something different: it deserves a fresh review
+        row.status = "unreviewed"
     management._audit(
         db,
         actor,

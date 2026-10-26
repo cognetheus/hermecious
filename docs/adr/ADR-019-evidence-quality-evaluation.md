@@ -1,6 +1,6 @@
 # ADR-019: Evidence quality is measured on frozen, human-adjudicated samples; the enrollment gate is fail-closed
 
-- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
+- **Status:** Accepted on 2026-10-25 by owner delegation (the owner instructed "you decide and go ahead" after reviewing the audit; recorded in EXECUTION_LEDGER.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P3.4_PROMPT.md`; blueprint §4 P3.4. **Batch 06 (`HERMECIOUS_BATCH_06_P3.4-P4.2.md`) is absent from the repository.**
 

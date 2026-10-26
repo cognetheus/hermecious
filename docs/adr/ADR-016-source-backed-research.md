@@ -1,6 +1,6 @@
 # ADR-016: Research reads only associated, rights-checked sources by key; deterministic rules propose claims; reviewers create facts
 
-- **Status:** Proposed — implemented and verified, awaiting owner acceptance (an agent may not accept its own ADR; AGENTS.md)
+- **Status:** Accepted on 2026-10-25 by owner delegation (the owner instructed "you decide and go ahead" after reviewing the audit; recorded in EXECUTION_LEDGER.md)
 - **Date:** 2026-10-24
 - **Source:** `OPUS_P3.1_PROMPT.md`; blueprint §4 P3.1. The prompt's `docs/phases/HERMECIOUS_BATCH_05_P3.1-P3.3.md` was **not present** in the repository, so the prompt and blueprint are the specification; see the ledger.
 

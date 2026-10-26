@@ -373,6 +373,7 @@ def _execute(
             break
         if run.scenario == "worker_restart_mock" and ctx.attempt == 1 and seq > (len(pool) + 1) // 2:
             raise SimulatedWorkerCrash("worker_restart_mock")
+        job_registry.keep_alive(ctx)  # renew the lease before each item
         if MONOTONIC() - started > RUN_SECONDS:
             raise job_registry.TransientJobError("time_budget")  # the next attempt resumes after durable items
         accepted_so_far = sum(1 for r in done.values() if r.bucket == "accepted")

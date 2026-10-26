@@ -291,6 +291,7 @@ def _execute(db: Session, ctx: job_registry.JobContext, run_id: uuid.UUID) -> di
     stopped: str | None = None
 
     for source_id in run.source_record_ids:
+        job_registry.keep_alive(ctx)  # renew the lease before each (possibly slow) source
         if db.scalar(select(ResearchRun.requested_cancel_at).where(ResearchRun.id == run_id)) is not None:
             stopped = "cancelled"
             break
