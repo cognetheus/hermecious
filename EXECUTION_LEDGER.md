@@ -2156,3 +2156,117 @@ Survivors:
 
 - **P5.1 implementation-readiness (technical only): YES.** A real adapter can sit behind the same per-item P4.3/P4.4 checks.
 - **Production outreach-readiness: NO.** P3.4 EVAL-07 is blocked, there is no real verified opt-in, and there is no official template approval (P5). Owner sign-off is required before P5.
+
+## Audit of P2.2–P4.5 against their prompts (2026-10-25)
+
+**Request:** audit every change made in P2.2–P4.5 against its prompt, fix bugs, clean up clearly bad code without over-engineering, and make sure every prompt requirement is done.
+
+**Method:**
+- Five independent read-only reviews, one per group of subphases: P2.2–2.4, P3.1–3.2, P3.3/3.4/4.1, P4.2–4.3, P4.4–4.5.
+- Each finding was then re-checked in the code before any change.
+- **Fix commit:** `ba7b7da`. **Migration:** `0019_audit_fixes` (additive); the dev database is upgraded to `0019 (head)`.
+
+### Defects fixed (each has a test unless noted)
+
+| Area | Defect (verified) | Fix | Test |
+|---|---|---|---|
+| P4.3 contacts (**high**) | A number typed with Urdu/Arabic digits passed `\d`, got a different digest, became a second contact and **escaped its suppression** | Eastern digits are normalised to ASCII; the patterns accept only `[0-9]` | unit `test_audit_eastern_digits_…`; integration `test_audit_concurrent_duplicate_contacts_…` (ASCII vs Urdu → `[201, 409]`) |
+| P2.4, P3.1, P4.5 runs | A worker killed on its last attempt is dead-lettered without the handler, leaving the run `running` forever: cancel did nothing, and a dry run blocked the campaign (409 "already active") | `jobs.service.worker_gone()`; cancel finishes orphaned runs (`worker_lost`); creating a dry run reconciles an orphaned active run as `failed` | `test_audit_orphaned_run_whose_worker_died_can_be_cancelled` (research), `test_audit_orphaned_run_is_reconciled_…` (simulator); discovery uses the same code path |
+| P3.1 research, P2.4 discovery | `FOR UPDATE` re-selects returned stale in-memory rows (`expire_on_commit=False`), so a cancel landing during the last source was reported `completed`, and the version was written twice | `populate_existing` on the run locks (the same fix P4.5 needed) | `test_audit_cancel_during_the_last_source_is_reported_cancelled` |
+| P2.2 OSM (medium-high) | Re-observing an unchanged listing never renewed its rights window, so a listing could never be admitted once its first observation expired | An unchanged candidate with a newer observation, and its source record, get the new observed/expiry/rights version (no revision, no audit noise) | existing LIVE/RUN suites pass |
+| P2.4 admission | OSM rights were not re-checked at review: an owner withdrawing OSM did not stop admission | `_rights_refusal` re-checks the live OSM descriptor | `test_audit_confirmed_same_campus_pair_…` (withdrawn → 409) |
+| P2.3/P2.4 identity | A candidate↔candidate pair **confirmed** as the same campus could be admitted as two accounts | `accept_new` on the twin joins the admitted account (a link with the suggestion id) | same test (2 accepts → 1 account, same id) |
+| P2.4 | The converged accept path skipped the rights check | Rights are checked on converge too | — (code path) |
+| P2.2 egress | Reset, TLS and truncated-response errors escaped untyped | Mapped to `UpstreamTransient("connection_failed")` | — |
+| P2.2 settings | A future `HERMECIOUS_OSM_REVIEWED_AT` meant the review never expired | Refused at startup | — |
+| P2.2 seed CSV | The required `source_reference` was hashed and discarded | Kept as text in the candidate attribution | LIVE-07 updated |
+| P3.1 research | Two rules on one sentence (contact form + phone): the second claim was silently dropped | Claim key includes `rule_id` | `test_audit_two_rules_on_one_sentence_…` |
+| P3.1 research | Claims from a source **unlinked** from the account could still be accepted (cross-campus evidence); superseded facts kept sources associated | Association re-checked at review and when rendering; only current facts associate | — (code path; covered by review and render use of `associated_sources`) |
+| P3.1 research | A retry after a mid-run cancel reported `cancelled_before_start` and 0 claims; a same-key concurrent review returned 409 | Real counts and partial reason; replay after the lock | — |
+| P3.1 extractor | "online admission form" was asserted whenever "online" appeared anywhere in the sentence | Only when "online" qualifies the admission; `rules-1.1` | RESEARCH tests pass with `rules-1.1` |
+| P3.2 brief | A fact's own `expires_at` was ignored (expired facts read as `observed`) | Usability uses the earlier of fact and source expiry | — |
+| P3.2 brief | Evidence that changes back (A→B→A) resurrected the old brief behind B, stuck "needs reassessment" | Compare with the newest brief only; per-account lock; uniqueness dropped (0019) | — |
+| P3.3 qualification | An impossible deferral date (2026-02-30) was accepted, then crashed assessment and every campaign preview in the org (500) | Validated at entry; stored bad values are treated as not in force | unit `test_audit_impossible_deferral_dates_…` |
+| P3.3 | Deferral expiry used the UTC date | Asia/Karachi day | unit `test_audit_deferral_ends_on_the_asia_karachi_day` |
+| P3.3 | An override could set delivery fit `strong` with no published offer | 409 | — |
+| P3.4 evaluation | Offer-derived `delivery_fit: moderate` items (no facts) were frozen unverifiable, so the real audit could only fail | Offer-derived delivery items are not school-evidence claims and leave the universe | — |
+| P3.4 | The gate never expired | `GATE_MAX_AGE` 90 days → `EXPIRED` (prompt: "absent/expired" gate) | EVAL-06 test extended (+91 days → closed) |
+| P3.4 | Replaying a post-remediation creation returned 409; remediation was not crash-safe (a demoted fact without a link could never be fixed) | Replay compares the meaningful fields; remediation links an existing correction | — |
+| P3.4 report | Loaded every verdict in the org | Filtered by the run's items | — |
+| P4.1 campaigns | `drafting_blocked` ignored pause and the gate; approval audit lacked the gate reference (prompt step 3) | Both included | existing CAMPAIGN tests pass |
+| P4.2 drafts | Archiving the account did not block drafts, eligibility or approval | `account_archived` blocker | `test_audit_archived_account_blocks_…` |
+| P4.2 composer | Fees/reporting observations ignored the fact's wording (manual facts became invented assertions) | Only the exact extractor signal is restated | unit `test_audit_observations_restate_only_…` |
+| P4.2 verifier | "20% off", "rupees", "in 2 months", "live by next month" passed | Patterns fixed | unit `test_audit_verifier_catches_…` (4 cases) |
+| P4.3 | Concurrent duplicate commands returned 500 | The whole command is inside the conflict handler | `test_audit_concurrent_duplicate_contacts_…` |
+| P4.3 | A real account renamed "(Synthetic)" got fixture trust | Fixtures need **every source** to be a synthetic fixture | `test_audit_a_renamed_real_account_…` |
+| P4.3 privacy | Free-text review and revoke reasons could store a number or email | Scrubbed with the logging redactor | — |
+| P4.3 gap | The owner could not tell which proof record to check | `proof_hint` (last four characters; the reference stays a keyed digest; immutable) | UI shows it |
+| P4.4 approvals | `policy_version` was stored but never compared | `policy_changed` stale reason; superseded revisions short-circuit (cheaper list) | — |
+| P4.5 simulator | A retry recomputed the candidate pool (seq collisions → failed run) | Pool frozen on the run at the first attempt (0019) | `test_audit_retry_uses_the_frozen_pool` |
+| P4.5 | Kill switch read once per attempt; no runtime bound | Settings re-read per item; 45 s per attempt, after which a retry resumes from the durable items | `test_audit_kill_switch_flipped_mid_run_…` |
+| P4.5 | Scenarios could distort readiness runs; `opt_out_mid_run` could silently not apply; `quiet_hours` evaluated in the past | Scenarios are fixture-only (400); the opt-out applies to the 2nd recipient that reaches the contact stage; quiet hours use "now if closed, else today's close" | `test_audit_scenarios_are_refused_for_readiness_runs` |
+| P4.5 report | The "draft review" prerequisite matched any `approval_*` substring; the digest ignored items | Exact code mapping; the digest covers item outcomes | SIM suites pass |
+| Web | Start research, Generate draft and Regenerate reused one idempotency key per page, so a second action replayed the first or got 409 | Fresh key after each success, stable for retries | e2e pass |
+| Web gaps | Missing displays | Run times, error and per-account draft/approval/permission state; grounding observed and expiry times; earlier revision text; a "Check eligibility" preview before approving | e2e pass |
+
+**Tests made meaningful:**
+- RUN-04 "no request after the review is withdrawn" can now fail (the fake transport stays wired).
+- EVAL-04's dead `expiring` variable became a real assertion.
+- EVAL-02's Excel check always runs (exactly 30 eligible accounts).
+
+### Governance corrections
+
+- **ADR-013 to ADR-024** were written as "Accepted" by the implementing agent, which AGENTS.md forbids. They are now **Proposed — awaiting owner acceptance**.
+- **The P2.3 prerequisite exception** (fixture-only start) was applied by the agent itself and still needs **owner ratification**.
+
+### Remaining gaps (not fixed; recorded honestly)
+
+- **Job lease.** Lease is 60 s with no renewal. A worst-case slow Overpass call (25 s connect + 25 s read) can outlive it, and its per-attempt request quota allows up to 9 upstream requests over 3 attempts. Needs lease heartbeats before live OSM use.
+- **CSV seed path.** CSV seed candidates cannot reach P2.4 admission (runs offer fixture and OSM only). Owner decision needed.
+- **`mark_distinct`.** It is a run-review button that calls the identity API, not a run decision action.
+- **Re-observation edge cases.** A superseded suggestion never reopens, and a rejected candidate that is re-observed is not re-matched.
+- **P3.1 time budget.** The per-source time budget is checked after the fetch returns, not enforced as a timeout. When the character budget runs out, it is reported as `no_visible_text`.
+- **P3.2 rights scope.** Brief usability considers expiry and metadata-only rights, not provider disablement or rights-version mismatch, for manual facts.
+- **Proof reference.** Encrypted storage is not implemented (no KMS); the reference is a keyed digest plus a 4-character hint.
+- **Secrets rule 3.** Outside production the API starts without the contact key, and the contact endpoints answer 503 instead.
+- **Tests that cover only part of the requirement:**
+  - ELIG-08 caps are unit-level only.
+  - DRAFT-09 has no API-level Unicode/XSS test (the verifier unit tests cover them).
+  - The SIM-10 e2e cancel is conditional.
+  - APPROVAL-10 has no job/outbox assertion in e2e (the API test has one).
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` at `ba7b7da` | 0 | 16/16 PASS. Unit + contract **388** (+10); integration **396** (+11); web 2; **e2e 30 + 11** |
+| First integration run after the fixes | 1 | Only LIVE-07, which now (intentionally) shows the kept seed reference; the assertion was updated |
+| Dev: `alembic upgrade head` (`0018 -> 0019`) | 0 | `0019 (head)`; api, worker and web healthy |
+
+### Mutation checks on the new guards (restored with `git checkout`; tree clean)
+
+All 12 were caught:
+- Eastern digits not normalised;
+- research orphan cancel removed;
+- research stale lock;
+- twin admission removed;
+- OSM review recheck removed;
+- fixture trust by name;
+- archived account ignored;
+- simulator orphan reconcile removed;
+- pool not frozen;
+- settings read once per run;
+- gate never expires;
+- contact-command race outside the handler.
+
+The "settings read once per run" mutant was first caught incidentally (a `NameError` in the frozen-pool test). I re-ran it against `test_audit_kill_switch_flipped_mid_run_…` alone, which also catches it (the 2nd item became `accepted`).
+
+### VERDICT
+
+- **Engineering status (P2.2–P4.5):** all verified defects fixed; check.sh green; the remaining gaps are listed above.
+- **Production outreach-readiness: still NO.** P3.4 EVAL-07 is blocked, there is no real opt-in, and there are no provider templates.
+- **Owner actions:**
+  - accept or amend ADR-013 to ADR-024;
+  - ratify the P2.3 fixture-only exception;
+  - decide on CSV-seed admission and on job-lease heartbeats before live OSM;
+  - set `HERMECIOUS_CONTACT_HMAC_SECRETS` in the local `.env`.
