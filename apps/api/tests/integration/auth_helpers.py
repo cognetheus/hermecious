@@ -70,6 +70,7 @@ def mutation_headers(csrf: str, **extra: Any) -> dict[str, str]:
     return {**ORIGIN, "X-CSRF-Token": csrf, **extra}
 
 
-# P5.2 (ADR-027) stores *inbound* provider facts. These are the only tables whose names contain "message" by design;
-# guards that prove "no outbound message store exists" exclude exactly these, never by pattern.
-INBOUND_PROVIDER_TABLES = frozenset({"provider_inbound_messages", "provider_message_status"})
+# The only WhatsApp tables whose names contain "message" or "send" by design: P5.2 (ADR-027) inbound facts, and the
+# P5.3 (ADR-028) owner-confirmed test send, whose one caller WAAD-10 pins. Guards that prove "no campaign or outbound
+# message store exists" exclude exactly these, never by pattern.
+WHATSAPP_PROVIDER_TABLES = frozenset({"provider_inbound_messages", "provider_message_status", "provider_test_sends"})

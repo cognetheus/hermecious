@@ -16,7 +16,7 @@ from app.accounts import service as account_service
 from app.accounts.models import AccountFact
 from app.core.clock import FixedClock
 from app.signals.models import SchoolSignalSnapshot
-from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
+from tests.integration.auth_helpers import WHATSAPP_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_research import JOHAR, RAVI, Org, finished, review, start
 
 pytestmark = pytest.mark.usefixtures("app")
@@ -136,7 +136,7 @@ def test_school_03_04_05_notices_never_become_process_tool_or_consent_claims(
     assert not any(
         t
         for t in tables_before
-        if t not in INBOUND_PROVIDER_TABLES and any(w in t for w in ("message", "outbound", "task", "send"))
+        if t not in WHATSAPP_PROVIDER_TABLES and any(w in t for w in ("message", "outbound", "task", "send"))
     )
     with db(app) as session:
         assert session.scalar(text("SELECT count(*) FROM campaign_accounts")) == 0

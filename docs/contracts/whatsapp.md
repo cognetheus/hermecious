@@ -46,3 +46,33 @@ All types are strict: unknown fields are refused and every time is timezone-awar
 | Signed but foreign, malformed or unmapped | 200, recorded as a quarantined envelope (no tenant data) |
 
 **Projected statuses:** `sent` → `delivered` → `read` (never downgraded). `failed` before delivery becomes `failed`; after delivery it is flagged `failed_after_delivered`. A success after `failed` is flagged `success_after_failed`.
+
+## P5.3 test send ([ADR-028](../adr/ADR-028-owner-confirmed-test-send.md))
+
+All routes are under `/api/v1/integrations/whatsapp`. They need a session, and CSRF on POST. Request bodies reject unknown fields with 422.
+
+| Route | Roles | Result |
+|---|---|---|
+| `GET /connection` | all | mode, Graph version, bound (masked phone ID), matches configuration, kill switch, `live_outbound_enabled: false` |
+| `POST /connection/bind` | owner | binds the configured IDs |
+| `GET /templates` | all | Meta's catalog: status and category as returned, `fresh` (≤15 min), `usable_for_test` |
+| `POST /templates/sync` | owner | reads Meta (paginated, ≤10 pages); missing templates become `NOT_RETURNED`; 409 outside test modes |
+| `GET /test-recipients` | all | masked; consent details are hidden from observers |
+| `POST /test-recipients` | owner | `{address, label, consent_statement}`: 422 `NOT_ALLOWLISTED`, 409 for a sourced contact or a suppressed number |
+| `POST /test-recipients/{id}/revoke` | owner | final |
+| `POST /test-sends` | owner, operator | `{recipient_id, template_id, parameters[], idempotency_key}` → 201 preview with a one-time `confirmation_nonce`; a replay returns 200 without a nonce; a changed payload returns 409 |
+| `POST /test-sends/{id}/confirm` | owner | `{preview_digest, confirmation_nonce}` → one Graph call; 409 `test send denied: <reason>`; a replay returns `replayed: true` |
+| `POST /test-sends/{id}/cancel` | owner, operator | only while `awaiting_confirmation` |
+| `POST /test-sends/{id}/mark-indeterminate` | owner | only for a `reserved` row older than 2 minutes |
+| `GET /test-sends`, `GET /test-sends/{id}` | all | observers get `{id, state, delivery, created_at, real_message, label}` only |
+
+**States:** `awaiting_confirmation` → `reserved` → `provider_accepted` | `definitively_rejected` | `indeterminate`. A preview can also end as `denied`, `expired` or `cancelled`.
+
+**Delivery** (separate from the state): `accepted_unknown_delivery` until a signed webhook shows `sent`, `delivered`, `read` or `failed`. The value never regresses.
+
+**Denial reasons:**
+- `not_test_mode`, `test_outbound_disabled`;
+- `connection_mismatch`, `connection_changed`;
+- `recipient_revoked`, `recipient_not_allowlisted`, `recipient_suppressed`, `recipient_is_sourced_contact`;
+- `daily_cap_reached`;
+- `template_check_failed_<error_class>`, `template_changed`.

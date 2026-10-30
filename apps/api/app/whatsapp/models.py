@@ -19,7 +19,9 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -232,3 +234,145 @@ class ProviderServiceWindow(Base):
     last_verified_inbound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     provider_message_id: Mapped[str] = mapped_column(String(256))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+# --- P5.3 (ADR-028): authoritative template catalog and the single guarded operator test send. --------------------
+
+TEST_SEND_STATES = (
+    "awaiting_confirmation",
+    "reserved",
+    "provider_accepted",
+    "definitively_rejected",
+    "indeterminate",
+    "denied",
+    "expired",
+    "cancelled",
+)
+
+
+class ProviderTemplate(Base):
+    """A read-only copy of Meta's template catalog. Provider strings are stored exactly; Meta stays authoritative."""
+
+    __tablename__ = "provider_templates"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id"),
+        UniqueConstraint("provider_connection_id", "template_id", name="uq_provider_templates_template"),
+        _org_fk(["provider_connection_id"], "provider_connections", "fk_provider_templates_org_connection"),
+        CheckConstraint("components_digest ~ '^[0-9a-f]{64}$'", name="components_digest_format"),
+        CheckConstraint("body_parameter_count >= 0 AND header_parameter_count >= 0", name="parameter_counts"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    provider_connection_id: Mapped[uuid.UUID]
+    template_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(512))
+    language: Mapped[str] = mapped_column(String(16))
+    category: Mapped[str] = mapped_column(String(32))
+    provider_status: Mapped[str] = mapped_column(String(32))
+    components_digest: Mapped[str] = mapped_column(String(64))
+    body_text: Mapped[str | None] = mapped_column(Text)
+    body_parameter_count: Mapped[int] = mapped_column(Integer)
+    header_parameter_count: Mapped[int] = mapped_column(Integer)
+    supported: Mapped[bool] = mapped_column(Boolean)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProviderTestRecipient(Base):
+    """An operator-owned test number in a separate registry (never accounts, contacts or campaigns).
+
+    The number itself lives only in the server-side allowlist setting; the row keeps a keyed digest, a mask and the
+    owner's written consent to receive test messages (test scope only; never marketing consent).
+    """
+
+    __tablename__ = "provider_test_recipients"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id"),
+        UniqueConstraint("provider_connection_id", "key_id", "address_digest", name="uq_provider_test_recipients"),
+        _org_fk(["provider_connection_id"], "provider_connections", "fk_provider_test_recipients_org_connection"),
+        _org_fk(["consented_by"], "users", "fk_provider_test_recipients_org_consenter"),
+        CheckConstraint("status IN ('active', 'revoked')", name="status"),
+        CheckConstraint("address_digest ~ '^[0-9a-f]{64}$'", name="digest_format"),
+        CheckConstraint("char_length(consent_statement) BETWEEN 20 AND 500", name="consent_length"),
+        CheckConstraint("version >= 1", name="version_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    provider_connection_id: Mapped[uuid.UUID]
+    label: Mapped[str] = mapped_column(String(80))
+    key_id: Mapped[str] = mapped_column(String(16))
+    address_digest: Mapped[str] = mapped_column(String(64))
+    address_hint: Mapped[str] = mapped_column(String(40))
+    consent_statement: Mapped[str] = mapped_column(Text)
+    consented_by: Mapped[uuid.UUID]
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class ProviderTestSend(Base):
+    """One preview -> owner confirmation -> at most one Graph call. Never resent; uncertainty is recorded."""
+
+    __tablename__ = "provider_test_sends"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id"),
+        UniqueConstraint("organization_id", "idempotency_key", name="uq_provider_test_sends_idempotency"),
+        _org_fk(["provider_connection_id"], "provider_connections", "fk_provider_test_sends_org_connection"),
+        _org_fk(["recipient_id"], "provider_test_recipients", "fk_provider_test_sends_org_recipient"),
+        _org_fk(["template_row_id"], "provider_templates", "fk_provider_test_sends_org_template"),
+        _org_fk(["requested_by"], "users", "fk_provider_test_sends_org_requester"),
+        _org_fk(["confirmed_by"], "users", "fk_provider_test_sends_org_confirmer"),
+        CheckConstraint(f"state IN ({_in(TEST_SEND_STATES)})", name="state"),
+        CheckConstraint(
+            "preview_digest ~ '^[0-9a-f]{64}$' AND nonce_digest ~ '^[0-9a-f]{64}$'"
+            " AND request_digest ~ '^[0-9a-f]{64}$'",
+            name="digest_formats",
+        ),
+        CheckConstraint(
+            "state NOT IN ('reserved', 'provider_accepted', 'definitively_rejected', 'indeterminate')"
+            " OR (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+            name="sent_only_after_confirmation",
+        ),
+        CheckConstraint(
+            "(state = 'provider_accepted') = (provider_message_id IS NOT NULL)", name="wamid_only_when_accepted"
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index(
+            "uq_provider_test_sends_in_flight",
+            "provider_connection_id",
+            unique=True,
+            postgresql_where=text("state = 'reserved'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    provider_connection_id: Mapped[uuid.UUID]
+    connection_version: Mapped[int] = mapped_column(Integer)
+    recipient_id: Mapped[uuid.UUID]
+    template_row_id: Mapped[uuid.UUID]
+    template_name: Mapped[str] = mapped_column(String(512))
+    template_language: Mapped[str] = mapped_column(String(16))
+    template_category: Mapped[str] = mapped_column(String(32))
+    components_digest: Mapped[str] = mapped_column(String(64))
+    params_json: Mapped[list[str]] = mapped_column(JSONB)
+    preview_digest: Mapped[str] = mapped_column(String(64))
+    nonce_digest: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(24))
+    denial_reason: Mapped[str | None] = mapped_column(String(64))
+    provider_message_id: Mapped[str | None] = mapped_column(String(256))
+    provider_message_status: Mapped[str | None] = mapped_column(String(40))
+    error_class: Mapped[str | None] = mapped_column(String(40))
+    provider_error_code: Mapped[str | None] = mapped_column(String(16))
+    policy_revision: Mapped[str] = mapped_column(String(40))
+    requested_by: Mapped[uuid.UUID]
+    confirmed_by: Mapped[uuid.UUID | None]
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(100))
+    request_digest: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer)

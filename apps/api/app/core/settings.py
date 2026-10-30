@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     whatsapp_test_identity_confirmed_at: datetime | None = Field(
         default=None, validation_alias="HERMECIOUS_WHATSAPP_TEST_IDENTITY_CONFIRMED_AT"
     )
+    # P5.3: server-side allowlist of operator-owned test recipients ("+92...,+44..."). Personal data: masked in repr.
+    whatsapp_test_recipients: SecretStr | None = Field(
+        default=None, validation_alias="HERMECIOUS_WHATSAPP_TEST_RECIPIENTS"
+    )
     # P5.3 separate test-outbound kill switch; off by default and never a production override.
     whatsapp_test_outbound_enabled: bool = Field(
         default=False, validation_alias="HERMECIOUS_WHATSAPP_TEST_OUTBOUND_ENABLED"
@@ -94,6 +98,7 @@ class Settings(BaseSettings):
         "whatsapp_verify_token",
         "whatsapp_test_identity_confirmed_by",
         "whatsapp_test_identity_confirmed_at",
+        "whatsapp_test_recipients",
         mode="before",
     )
     @classmethod

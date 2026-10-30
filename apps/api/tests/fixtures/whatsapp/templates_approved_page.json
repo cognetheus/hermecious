@@ -1,0 +1,7 @@
+{"data": [
+  {"id": "900000000000001", "name": "hermecious_test_ping", "language": "en_US", "category": "UTILITY", "status": "APPROVED",
+   "components": [{"type": "BODY", "text": "Hello {{1}}, this is a Hermecious test message."}]},
+  {"id": "900000000000002", "name": "promo_paused", "language": "en_US", "category": "MARKETING", "status": "PAUSED",
+   "components": [{"type": "BODY", "text": "Synthetic paused template."}]}
+ ],
+ "paging": {"cursors": {"before": "QVFIUBEFORE", "after": "QVFIUPAGE2"}, "next": "https://graph.facebook.com/v26.0/100000000000001/message_templates?after=QVFIUPAGE2"}}

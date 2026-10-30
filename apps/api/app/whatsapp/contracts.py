@@ -110,6 +110,8 @@ class TemplateDescriptor(_Strict):
     components_digest: str
     body_parameter_count: int
     header_parameter_count: int
+    body_text: str | None = None  # the approved body, for an exact operator preview
+    supported: bool = True  # False when components need parameters we cannot type safely (media, URL buttons)
     fetched_at_utc: AwareDatetime
     source: Literal["meta", "contract_fixture"] = "meta"
 

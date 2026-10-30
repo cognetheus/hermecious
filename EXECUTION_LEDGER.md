@@ -2420,3 +2420,121 @@ The "settings read once per run" mutant was first caught incidentally (a `NameEr
 **Push note:** GitHub answered `Internal Server Error` for the first push of `e0949ad`; it was retried with this ledger commit.
 
 **P5.3 readiness:** YES (engineering). **Production outreach-readiness:** NO.
+
+## P5.3 — Provider-authoritative template catalog and restricted test sending (2026-10-30)
+
+**Scope:** `HERMECIOUS_BATCH_08_P5.1-P5.3.md` §P5.3. **Base:** P5.2 (`68964ed`). **Migration:** `0022_provider_test_sends` (additive). **Status:** engineering slice VERIFIED offline (WATEST-01..09); **WATEST-10 BLOCKED_EXTERNAL**, so P5.3 as a whole is **PARTIAL**.
+
+### Inventory and external state (P5.3.1)
+
+- **Reused:**
+  - the P5.1 transport (`send_template`, `list_templates`) and `build_transport` modes;
+  - the P5.2 projection and observations, joined by `(connection, wamid)`;
+  - P4.3 keyed contact digests and suppressions;
+  - `management._audit`.
+- **External, not available to the agent:**
+  - Meta developer app, WABA and **test** phone-number ID;
+  - access token, app secret and verify token;
+  - a recipient verified in Meta's test configuration;
+  - the owner's confirmation.
+
+  None were supplied. Nothing was invented, and no Meta request was made.
+- **Not touched:** P4.4 approvals (a P4.2 draft is not a Meta template) and the P4.5 simulator (it still has no transport).
+
+### Design (ADR-028 Proposed; contract and runbook §2 updated)
+
+- **One sender:** `app/whatsapp/test_sends.py`. WAAD-10 enforces that it is the only transport importer and the only `send_template` caller, and pins the exact list of WhatsApp POST routes. No job, campaign, draft, account, contact or simulator path reaches it.
+- **Catalog:** an owner sync of `GET /{WABA}/message_templates` (paginated, ≤10 pages).
+  - Provider strings are stored as returned; missing templates become `NOT_RETURNED`.
+  - A template is usable only if fresh (≤15 min), `APPROVED`, `UTILITY`/`MARKETING`, with no header parameters and only supported components.
+- **Recipients:**
+  - the server allowlist `HERMECIOUS_WHATSAPP_TEST_RECIPIENTS` (`SecretStr`, ≤5 numbers);
+  - owner registration with a consent statement;
+  - not a sourced contact, not suppressed;
+  - stored as a keyed digest and a mask;
+  - recovered at send time only by matching the digest against the allowlist.
+- **Two steps:**
+  - **Preview** (owner or operator): non-sending, with an exact digest, a 10-minute TTL, a one-time nonce (only its hash stored) and an idempotency key.
+  - **Confirm** (owner, CSRF, digest + nonce):
+    1. fresh re-checks: mode, kill switch, binding and version, recipient, suppression, sourced contact, daily cap of 3 per PKT day;
+    2. the template is re-fetched from Meta;
+    3. the row is **reserved** (commit, at most one in flight per connection);
+    4. **one** Graph call;
+    5. `provider_accepted`, `definitively_rejected` or `indeterminate`.
+  - Never resent. A stale reservation can only be marked `indeterminate` by an owner after 2 minutes.
+- **Spec deviations (documented in ADR-028):**
+  - The states `created → preflight_passed` are collapsed into the preview transaction.
+  - The route is `/confirm` instead of `:confirm`; the batch allows this ("exact route may adapt").
+  - There is no step-up re-authentication, because the repository has none. The owner role, CSRF and the one-time nonce are the controls.
+- **UI `/integrations/whatsapp`:**
+  - connection status, catalog with freshness, masked recipients, preview form;
+  - a confirmation dialog titled with the exact batch label, needing a checkbox before the owner-only send button;
+  - a webhook status timeline.
+
+  Observers get redacted status and no controls. There is no account, campaign, bulk or free-form recipient control.
+- **Config:** `HERMECIOUS_WHATSAPP_TEST_RECIPIENTS` was added to `.env.example` (empty) and `compose.yaml`.
+
+### Acceptance evidence
+
+All offline: Postgres plus a fake Graph layer injected through `test_sends.CONTRACT_HTTP`, active only in `contract_test`, so no socket opens. Synthetic zero-filled numbers only.
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| WATEST-01 | `test_watest_01_…` | Preview: `awaiting_confirmation`, exact text "Hello Owner, this is a Hermecious test message.", masked `+92 ••••••• 201`, UTILITY; 0 POSTs. Operator confirm → 403. Owner confirm → `provider_accepted` with the wamid. Exactly 1 POST to `graph.facebook.com/v26.0/<phone>/messages`, `to` = the allowlisted digits, template + body parameter. Observer sees only `{id, state, delivery, created_at, real_message, label}` | VERIFIED |
+| WATEST-02 | `test_watest_02_…` | Sync reads both pages (`after` cursor followed). PAUSED → `not_approved`, AUTHENTICATION → `category_not_allowed`, IMAGE header → `unsupported_components`. Meta changes the body before confirm → `template_changed`. +16 min → `stale_catalog`. 0 POSTs | VERIFIED |
+| WATEST-03 | `test_watest_03_…` | Non-allowlisted → 422 `NOT_ALLOWLISTED`. A number that is a sourced school contact → 409. `phone_number`, `body`, `campaign_id`, `account_id`, `recipient_url` → 422. 0 POSTs, 0 send rows | VERIFIED |
+| WATEST-04 | `test_watest_04_changes_…` (5 cases); `test_watest_04_role_or_session_…` (2 cases) | After the preview: revoke, authenticated STOP via signed webhook, kill switch off, allowlist removal, connection rebinding → 409 with the specific denial reason; a replayed confirm returns the recorded `denied`. Owner demoted to operator → 403; session revoked → 401; the preview stays `awaiting_confirmation`. 0 POSTs in every case | VERIFIED |
+| WATEST-05 | `test_watest_05_…` | Same key + payload → 200 replay without a nonce; changed payload → 409. Wrong nonce → 409 and not consumed. Two concurrent owner confirms → both 200, **1 POST**. A later confirm → `replayed: true`, still 1 POST | VERIFIED |
+| WATEST-06 | `test_watest_06_07_…` | Accepted → `delivery = accepted_unknown_delivery` (not delivered) | VERIFIED |
+| WATEST-07 | `test_watest_06_07_…` | Statuses arriving read → sent → delivered → `read`, timeline in provider order (sent, delivered, read). A `read` observed **before** the confirm, for the wamid Meta later returns, is reconciled on read | VERIFIED |
+| WATEST-08 | `test_watest_08_…` (4 cases + stale) | Upstream uncertain → `indeterminate`/`provider_uncertain`; 429 → `definitively_rejected`/`provider_quota`; 401 → `provider_auth`; malformed 2xx → `indeterminate`. No wamid invented; a re-confirm replays (1 POST). A reservation <2 min old cannot be marked; after 3 min → `indeterminate` | VERIFIED |
+| WATEST-09 | `test_watest_09_…` | 3 confirms, then the 4th → `daily_cap_reached` (3 POSTs). `simulation` and `production` modes → sync and preview 409. Status reports `live_outbound_enabled: false`, `test_sending_available: false` | VERIFIED |
+| WATEST-10 | — | Needs Meta test credentials, a Meta test phone number, a recipient verified at Meta and the owner's own confirmation. None were supplied; the agent must not self-approve an outbound send | **BLOCKED_EXTERNAL** |
+| UI | `e2e/whatsapp-test.spec.ts` | Simulation mode: the owner sees mode, "unavailable in this mode" and no sync, preview or send control; the API returns sync 409 and forged fields 422. The observer sees no buttons; sync → 403 | see gate commands |
+
+### Mutation checks (scratch runner; each mutant restored from its exact original text)
+
+16 of 17 were caught by the unit + `test_whatsapp_test_sends.py` suites:
+- nonce/digest not checked (WATEST-05);
+- kill switch not re-checked (04);
+- allowlist not re-checked (04);
+- suppression not re-checked (04);
+- daily cap ignored (09);
+- template not re-validated with Meta (02);
+- a replay falls through to a second send (04);
+- revocation not re-checked (04);
+- registration accepts a sourced contact (03);
+- stale catalog accepted (02);
+- category not checked (02);
+- acceptance shown as `delivered` (06);
+- a fresh reservation can be marked indeterminate (08);
+- observers get the full view (01);
+- request bodies accept unknown fields (03);
+- connection mismatch ignored (04).
+
+**Survived:** T15, "confirm route allows operators". It is an **equivalent mutant**: `confirm()` itself requires `ADMINISTER`, so the operator still gets 403. Removing both layers (T15b) was caught by WATEST-01. Both layers are kept.
+
+### Incidental fixes
+
+- **WAAD-10 (P5.1) was partly vacuous.**
+  - Since FastAPI 0.16x, included routers are not flattened into `app.routes`, so "no WhatsApp route" iterated over 19 `_IncludedRouter` objects and could never fail.
+  - The importer grep also missed the `from app.whatsapp import transport` form.
+  - The test now uses `iter_route_contexts`, the same iteration as the startup guard, and asserts it sees more than 50 routes. It matches both import forms and pins the exact WhatsApp POST routes and the single `send_template` caller.
+- **Mutation runner restore.** The scratch runner restored mutants with `git checkout`, which cannot restore untracked files. It now writes back the exact original text.
+- **Table-name guards.** The P5.2 constant `INBOUND_PROVIDER_TABLES` is renamed `WHATSAPP_PROVIDER_TABLES` and now also lists `provider_test_sends` (ADR-028). The first `check.sh` run failed 6 older "no send table" guards on exactly that table. The guards still match every other message, send or outbound table by pattern.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/test-integration.sh tests/integration/test_whatsapp_test_sends.py tests/integration/test_migrations.py` | 0 | 25 passed (round-trip to `0022`) |
+| `bash scripts/check.sh` (first run) | 1 | Integration: 6 failed (the table-name guards above), 421 passed. All other steps passed, e2e 32 + 11 |
+| `bash scripts/test-integration.sh` after the fix | 0 | 427 passed |
+| `bash scripts/check.sh` | 0 | Unit + contract 431, web 2, integration 427, e2e **32 + 11** (includes `whatsapp-test.spec.ts`) |
+| Dev: `alembic upgrade head` (`0021 -> 0022`) | 0 | `0022 (head)`; api, worker and web healthy |
+
+**WATEST-10 / P5.3.5 live gate:** BLOCKED_EXTERNAL. To unblock, the owner follows `docs/runbooks/whatsapp.md` §2 with Meta test assets and performs the confirmation, then records the redacted proof here. The agent must not perform it.
+
+**Owner review:** ADR-026, ADR-027 and ADR-028 are Proposed and await acceptance.
+
+**P5.4 readiness:** YES (engineering: test send and status path proven offline). **Production outreach-readiness:** NO. `HERMECIOUS_LIVE_OUTBOUND_ENABLED` still refuses to start; P5.5 owns the go/no-go decision.

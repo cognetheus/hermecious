@@ -21,6 +21,20 @@ def production_phone_ids(settings: "Settings") -> frozenset[str]:
     return frozenset(p.strip() for p in settings.whatsapp_production_phone_number_ids.split(",") if p.strip())
 
 
+def test_recipient_numbers(s: "Settings") -> tuple[str, ...] | None:
+    """The canonical E.164 test recipients, or None if any entry is invalid. Never logged."""
+    from app.contacts.addresses import AddressError, canonical  # noqa: PLC0415
+
+    if s.whatsapp_test_recipients is None:
+        return ()
+    raw = [p for p in s.whatsapp_test_recipients.get_secret_value().split(",") if p.strip()]
+    try:
+        numbers = tuple(canonical(p) for p in raw)
+    except AddressError:
+        return None
+    return numbers if 0 < len(numbers) <= 5 else None
+
+
 def whatsapp_setting_error(s: "Settings") -> str | None:
     """The name of the first offending setting, or None. Never a value."""
     if s.whatsapp_graph_version not in SUPPORTED_GRAPH_VERSIONS:
@@ -40,8 +54,13 @@ def whatsapp_setting_error(s: "Settings") -> str | None:
         return "HERMECIOUS_WHATSAPP_MODE"  # a credential next to the no-egress mode is a misconfiguration
     if s.whatsapp_mode == "contract_test" and (s.environment != "test" or s.whatsapp_access_token is not None):
         return "HERMECIOUS_WHATSAPP_MODE"  # local fakes only: no real token, test environment only
-    if s.whatsapp_test_outbound_enabled and s.whatsapp_mode != "provider_test":
+    test_modes = ("contract_test", "provider_test")  # contract_test reaches only an injected local fake
+    if s.whatsapp_test_outbound_enabled and s.whatsapp_mode not in test_modes:
         return "HERMECIOUS_WHATSAPP_TEST_OUTBOUND_ENABLED"
+    if s.whatsapp_test_recipients is not None and (
+        s.whatsapp_mode not in test_modes or test_recipient_numbers(s) is None
+    ):
+        return "HERMECIOUS_WHATSAPP_TEST_RECIPIENTS"
     if s.whatsapp_mode == "provider_test":
         if s.environment == "production":
             return "HERMECIOUS_WHATSAPP_MODE"

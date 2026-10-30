@@ -1,6 +1,7 @@
 """P5.1 WAAD-01..08 and 10 (contract tests against a local fake Graph layer; no network). WAAD-09 is integration."""
 
 import json
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -324,19 +325,33 @@ def test_waad_08_token_and_recipient_never_reach_results_logs_or_repr(
 
 
 def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
+    from fastapi.routing import iter_route_contexts  # noqa: PLC0415
+
     from app.jobs import registry  # noqa: PLC0415
     from app.main import create_app  # noqa: PLC0415
 
     api = Path(__file__).parents[2] / "app"
-    users = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if "app.whatsapp.transport" in p.read_text())
-    assert users == []  # P5.1: nothing imports the transport yet (P5.3 adds one guarded caller)
+    imports = re.compile(r"app\.whatsapp\.transport|from app\.whatsapp import [^\n]*\btransport\b")
+    users = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if imports.search(p.read_text()))
+    assert users == ["whatsapp/test_sends.py"]  # P5.3: the one guarded, owner-confirmed test sender
+    senders = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if ".send_template(" in p.read_text())
+    assert senders == ["whatsapp/test_sends.py"]
     simulator = "\n".join(p.read_text() for p in (api / "simulations").glob("*.py"))
     assert "app.whatsapp" not in simulator and "graph.facebook.com" not in simulator
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "whatsapp", "dispatch"))]
     egress_users = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if "app.egress" in p.read_text())
     assert egress_users == ["discovery/osm.py", "whatsapp/transport.py"]
     app = create_app(make_settings())
-    assert not [r for r in app.routes if "whatsapp" in getattr(r, "path", "")]
+    paths = {(m, str(c.path)) for c in iter_route_contexts(app.routes) for m in (c.methods or ())}
+    assert len(paths) > 50  # the iteration really sees the included routers
+    sending = sorted(p for m, p in paths if m == "POST" and ("whatsapp" in p or "send" in p.rsplit("/", 1)[-1]))
+    base = "/api/v1/integrations/whatsapp"
+    assert sending == sorted([
+        f"{base}/webhook", f"{base}/connection/bind", f"{base}/templates/sync", f"{base}/test-recipients",
+        f"{base}/test-recipients/{{recipient_id}}/revoke", f"{base}/test-sends",
+        f"{base}/test-sends/{{send_id}}/confirm", f"{base}/test-sends/{{send_id}}/cancel",
+        f"{base}/test-sends/{{send_id}}/mark-indeterminate",
+    ])  # fmt: skip
 
 
 PROVIDER_TEST = {

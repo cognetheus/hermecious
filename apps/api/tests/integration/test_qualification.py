@@ -16,7 +16,7 @@ from app.core.clock import FixedClock
 from app.offers import schemas
 from app.offers import service as offer_service
 from app.qualification.models import Assessment
-from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
+from tests.integration.auth_helpers import WHATSAPP_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_research import JOHAR, Org
 from tests.integration.test_school_signals import _manual_fact, accept, researched
 
@@ -133,7 +133,7 @@ def test_qualify_01_03_four_dimensions_with_versions_and_contact_now_is_priority
     assert not [
         t
         for t in tables_before
-        if t not in INBOUND_PROVIDER_TABLES and any(w in t for w in ("outreach", "message", "task", "send"))
+        if t not in WHATSAPP_PROVIDER_TABLES and any(w in t for w in ("outreach", "message", "task", "send"))
     ]
     with db(app) as session:  # P4.3 adds contact_permissions (ADR-022); assessing never grants one
         assert session.scalar(text("SELECT count(*) FROM contact_permissions")) == 0

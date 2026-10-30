@@ -17,6 +17,7 @@ Graph does not offer an idempotency key for `/messages`: application idempotency
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -137,6 +138,65 @@ def parse_send_response(operation_id: uuid.UUID, status: int, raw: bytes, now: d
     return _error(operation_id, now, "provider_bad_request", safe_code, False, "definitive_rejected")
 
 
+_PLACEHOLDER = re.compile(r"\{\{\s*(\d+)\s*\}\}")
+_CURSOR = re.compile(r"[A-Za-z0-9=_-]{1,200}")
+TEMPLATE_FIELDS = "id,name,language,category,status,components"
+MAX_TEMPLATE_PAGES = 10
+
+
+def _placeholders(text: Any) -> int:
+    return len(set(_PLACEHOLDER.findall(text))) if isinstance(text, str) else 0
+
+
+def parse_templates(raw: bytes, waba_id: str, now: datetime) -> tuple[list[TemplateDescriptor], str | None]:
+    """One page of `GET /{waba}/message_templates`. Provider strings are kept exactly; bad entries are skipped."""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ProviderCallError("provider_uncertain", "the template list could not be read") from None
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise ProviderCallError("provider_uncertain", "the template list could not be read")
+    out: list[TemplateDescriptor] = []
+    for row in rows[:200]:
+        if not isinstance(row, dict):
+            continue
+        fields = (row.get("id"), row.get("name"), row.get("language"), row.get("category"), row.get("status"))
+        if not all(isinstance(f, str) and 0 < len(f) <= 512 for f in fields):
+            continue
+        raw_components = row.get("components")
+        components: list[Any] = raw_components if isinstance(raw_components, list) else []
+        body = next((c for c in components if isinstance(c, dict) and c.get("type") == "BODY"), None)
+        header = next((c for c in components if isinstance(c, dict) and c.get("type") == "HEADER"), None)
+        supported = all(isinstance(c, dict) for c in components)
+        if header is not None and header.get("format", "TEXT") != "TEXT":
+            supported = False  # media headers need a media parameter we do not send
+        for c in components:
+            if isinstance(c, dict) and c.get("type") == "BUTTONS" and "{{" in json.dumps(c.get("buttons", [])):
+                supported = False  # URL-variable buttons
+        try:
+            out.append(
+                TemplateDescriptor(
+                    waba_id=waba_id, template_id=str(row["id"]), name=str(row["name"]), language=str(row["language"]),
+                    category=str(row["category"]), provider_status=str(row["status"]),
+                    components_digest=components_digest(components),
+                    body_parameter_count=_placeholders(body.get("text") if body else None),
+                    header_parameter_count=_placeholders(header.get("text") if header else None),
+                    body_text=str(body.get("text"))[:1024] if body and isinstance(body.get("text"), str) else None,
+                    supported=supported, fetched_at_utc=now,
+                )
+            )  # fmt: skip
+        except ValueError:
+            continue
+    raw_paging = data.get("paging")
+    paging: dict[str, Any] = raw_paging if isinstance(raw_paging, dict) else {}
+    raw_cursors = paging.get("cursors")
+    cursors: dict[str, Any] = raw_cursors if isinstance(raw_cursors, dict) else {}
+    after = cursors.get("after")
+    cursor = after if paging.get("next") and isinstance(after, str) and _CURSOR.fullmatch(after) else None
+    return out, cursor
+
+
 class MetaCloudTransport:
     """One connection, one official host, template sends only. Construct only through `build_transport`."""
 
@@ -179,6 +239,8 @@ class MetaCloudTransport:
             raise ProviderCallError("authz", "the template belongs to another WhatsApp Business Account")
         if (template.name, template.language) != (intent.template_name, intent.template_language):
             raise ProviderCallError("validation", "the template does not match the intent")
+        if not template.supported:
+            raise ProviderCallError("policy_denied", "the template has components this sender cannot fill safely")
         if template.provider_status != "APPROVED":
             raise ProviderCallError("policy_denied", "the template is not currently APPROVED by Meta")
         if template.category not in CATEGORIES.get(intent.purpose, frozenset()):
@@ -224,6 +286,31 @@ class MetaCloudTransport:
                                "error_class": result.error_class, "provider_error_code": result.provider_error_code}},
         )  # fmt: skip
         return result
+
+    def list_templates(self, name: str | None = None) -> list[TemplateDescriptor]:
+        """Read-only, paginated (bounded) template catalog for this connection's WABA. Raises `ProviderCallError`."""
+        found: list[TemplateDescriptor] = []
+        after: str | None = None
+        for _page in range(MAX_TEMPLATE_PAGES):
+            query = {"fields": TEMPLATE_FIELDS, "limit": "50"}
+            if name is not None:
+                query["name"] = name
+            if after is not None:
+                query["after"] = after
+            try:
+                status, raw = self._http.request_json("GET", self.templates_url, query=query, bearer=self._token())
+            except (UpstreamUncertain, UpstreamTransient, ResponseTooLarge):
+                raise ProviderCallError("provider_transient", "the template catalog could not be fetched") from None
+            except EgressDenied:
+                raise ProviderCallError("policy_denied", "the template catalog endpoint is not allowed") from None
+            if status != 200:
+                mapped = parse_send_response(uuid.uuid4(), status, raw, self._now())
+                raise ProviderCallError(mapped.error_class or "unknown", "the provider refused the template request")
+            page, after = parse_templates(raw, self.connection.waba_id, self._now())
+            found.extend(page)
+            if after is None:
+                break
+        return found
 
     def health_check(self) -> dict[str, Any]:
         """Read-only and credential-safe: can the token read this phone-number resource? Returns no identifiers."""

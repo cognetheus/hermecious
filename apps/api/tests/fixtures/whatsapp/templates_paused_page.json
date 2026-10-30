@@ -1,0 +1,7 @@
+{"data": [
+  {"id": "900000000000003", "name": "otp_code", "language": "en_US", "category": "AUTHENTICATION", "status": "APPROVED",
+   "components": [{"type": "BODY", "text": "{{1}} is your code."}]},
+  {"id": "900000000000004", "name": "media_header", "language": "en_US", "category": "UTILITY", "status": "APPROVED",
+   "components": [{"type": "HEADER", "format": "IMAGE"}, {"type": "BODY", "text": "Synthetic media template."}]}
+ ],
+ "paging": {"cursors": {"before": "QVFIUPAGE2", "after": "QVFIUEND"}}}
