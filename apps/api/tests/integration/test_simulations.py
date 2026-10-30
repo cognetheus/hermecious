@@ -24,7 +24,7 @@ from app.jobs.models import Job, OutboxEvent
 from app.simulations import service as sim_service
 from app.simulations import transport
 from app.simulations.models import SimulationItem
-from tests.integration.auth_helpers import db, logged_in, mutation_headers
+from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_approvals import Setup, approve
 from tests.integration.test_campaigns import approve as approve_member
 from tests.integration.test_campaigns import exclude, item, new_campaign, plain_account, preview, transition
@@ -424,7 +424,11 @@ def test_sim_09_network_spy_registry_and_kill_switch_prove_zero_real_sends(
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "message", "dispatch", "deliver"))]
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
-        assert not {t for t in tables if any(w in t for w in ("message", "outbound", "delivery", "send"))}
+        assert not {
+            t
+            for t in tables - INBOUND_PROVIDER_TABLES
+            if any(w in t for w in ("message", "outbound", "delivery", "send"))
+        }
         with pytest.raises(DBAPIError, match="zero_real_messages"):
             session.execute(text("UPDATE simulation_runs SET real_messages_sent = 1"))
     monkeypatch.setenv("HERMECIOUS_OUTREACH_KILL_SWITCH", "true")

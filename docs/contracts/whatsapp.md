@@ -33,3 +33,16 @@ All types are strict: unknown fields are refused and every time is timezone-awar
 | Other 4xx | `provider_bad_request` | no |
 | Malformed or oversized 2xx, or a timeout or reset after the write | `indeterminate` (`provider_uncertain`) | **never resent** |
 | Connection failed before the write | `definitive_rejected` (`provider_transient`) | yes |
+
+## P5.2 webhook ([ADR-027](../adr/ADR-027-signed-webhook-inbox.md))
+
+| Request | Result |
+|---|---|
+| `GET …/webhook?hub.mode=subscribe&hub.verify_token=<token>&hub.challenge=<1-128 [A-Za-z0-9_-]>` | 200 `text/plain` challenge, otherwise a bodyless 403 |
+| `POST …/webhook` with a valid `X-Hub-Signature-256`, JSON, ≤256 KiB | 200 `{"status":"received","accepted":n}` after a durable commit |
+| Bad or missing signature | 401 `webhook_signature` (nothing stored) |
+| App secret unset / storage down | 503 `webhook_not_configured` / `storage_unavailable` (Meta retries) |
+| Wrong content type / too large | 415 / 413 |
+| Signed but foreign, malformed or unmapped | 200, recorded as a quarantined envelope (no tenant data) |
+
+**Projected statuses:** `sent` → `delivered` → `read` (never downgraded). `failed` before delivery becomes `failed`; after delivery it is flagged `failed_after_delivered`. A success after `failed` is flagged `success_after_failed`.

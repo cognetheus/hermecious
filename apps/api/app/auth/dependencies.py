@@ -28,7 +28,9 @@ logger = logging.getLogger("app.auth")
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 CSRF_HEADER = "X-CSRF-Token"
 ALL_ROLES = frozenset(Role)
-PUBLIC_API_PATHS = frozenset({"/api/v1/auth/login"})
+# Exact paths reachable without a session. The WhatsApp webhook (P5.2, ADR-027) is called by Meta, which has no
+# session; it authenticates every POST by HMAC over the raw body and every GET by a constant-time verify token.
+PUBLIC_API_PATHS = frozenset({"/api/v1/auth/login", "/api/v1/integrations/whatsapp/webhook"})
 _ROLES_ATTR = "_hermecious_allowed_roles"
 
 Endpoint = TypeVar("Endpoint", bound=Callable[..., Any])

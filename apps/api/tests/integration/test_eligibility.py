@@ -16,7 +16,7 @@ from app.core.clock import FixedClock
 from app.jobs import registry
 from app.jobs.models import Job, OutboxEvent
 from tests.conftest import FIXED_NOW
-from tests.integration.auth_helpers import db, logged_in, mutation_headers
+from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_campaigns import exclude, plain_account, transition
 from tests.integration.test_drafts import approved
 from tests.integration.test_research import Org
@@ -581,7 +581,9 @@ def test_elig_10_kill_switch_pause_exclusion_stale_state_and_zero_send_capabilit
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "whatsapp", "message", "deliver"))]
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
-    assert not {t for t in tables if any(w in t for w in ("message", "send", "outbound", "delivery"))}
+    assert not {
+        t for t in tables - INBOUND_PROVIDER_TABLES if any(w in t for w in ("message", "send", "outbound", "delivery"))
+    }
     assert counts(app) == before
 
 

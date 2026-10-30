@@ -27,6 +27,7 @@ from app.research import routes as research_routes
 from app.resolution import routes as identity_routes
 from app.signals import routes as signal_routes
 from app.simulations import routes as simulation_routes
+from app.whatsapp import routes as whatsapp_routes
 
 DEPENDENCY_TIMEOUT_SECONDS = 2
 
@@ -106,6 +107,7 @@ def create_app(
     app.include_router(contact_routes.router)
     app.include_router(approval_routes.router)
     app.include_router(simulation_routes.router)
+    app.include_router(whatsapp_routes.router)  # public: HMAC-authenticated Meta webhook
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

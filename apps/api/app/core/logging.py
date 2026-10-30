@@ -66,7 +66,8 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer " + REDACTED),
     (
         re.compile(
-            r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|set-cookie|session)"
+            # Any key *ending* in a sensitive word, e.g. `hub.verify_token=`, `app_secret:` (P5.2).
+            r"(?i)\b([\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|set-cookie|session))"
             r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
         ),
         r"\1\2" + REDACTED,

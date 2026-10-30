@@ -17,7 +17,7 @@ from app.campaigns import service as campaign_service
 from app.campaigns.models import Campaign, CampaignAccount, CampaignDailyUsage
 from app.core.clock import FixedClock
 from app.jobs.models import OutboxEvent
-from tests.integration.auth_helpers import db, logged_in, mutation_headers
+from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_evaluation import Team, judge
 from tests.integration.test_evaluation import create as create_eval
 from tests.integration.test_evaluation import detail as eval_detail
@@ -428,7 +428,9 @@ def test_campaign_09_auth_scope_injection_and_zero_sends(app: FastAPI, client: T
     assert count(app, OutboxEvent) == outbox
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
-    assert not {t for t in tables if any(w in t for w in ("message", "outreach", "send", "outbound"))}
+    assert not {
+        t for t in tables - INBOUND_PROVIDER_TABLES if any(w in t for w in ("message", "outreach", "send", "outbound"))
+    }
     with db(app) as session:  # P4.3 adds contact/permission tables (ADR-022); campaigns create no rows there
         assert session.scalar(text("SELECT count(*) FROM contacts")) == 0
         assert session.scalar(text("SELECT count(*) FROM contact_permissions")) == 0

@@ -15,7 +15,7 @@ from app.accounts.models import ActionAudit
 from app.core.clock import FixedClock
 from app.drafts.models import Draft
 from app.jobs.models import Job, OutboxEvent
-from tests.integration.auth_helpers import db, logged_in, mutation_headers
+from tests.integration.auth_helpers import INBOUND_PROVIDER_TABLES, db, logged_in, mutation_headers
 from tests.integration.test_campaigns import approve, item, new_campaign, preview, ready, transition
 from tests.integration.test_research import Org
 
@@ -154,7 +154,7 @@ def test_draft_06_hostile_research_text_changes_nothing(
     assert refused.status_code == 409 and "evidence_changed" in refused.json()["error"]["message"]
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
-    assert not {t for t in tables if any(w in t for w in ("message", "consent", "send"))}
+    assert not {t for t in tables - INBOUND_PROVIDER_TABLES if any(w in t for w in ("message", "consent", "send"))}
     with db(app) as session:  # P4.3 adds contact_permissions (ADR-022); hostile text never creates one
         assert session.scalar(text("SELECT count(*) FROM contact_permissions")) == 0
 

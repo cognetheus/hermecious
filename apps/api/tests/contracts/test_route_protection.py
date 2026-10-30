@@ -19,8 +19,9 @@ def api_routes(app: FastAPI) -> list[RouteContext]:
     return [r for r in iter_route_contexts(app.routes) if (r.path or "").startswith("/api/v1")]
 
 
-def test_public_allowlist_is_exactly_login(app: FastAPI) -> None:
-    assert frozenset({"/api/v1/auth/login"}) == PUBLIC_API_PATHS
+def test_public_allowlist_is_exactly_login_and_the_signed_webhook(app: FastAPI) -> None:
+    # The Meta webhook (P5.2, ADR-027) has no session; it is authenticated by HMAC (POST) and verify token (GET).
+    assert frozenset({"/api/v1/auth/login", "/api/v1/integrations/whatsapp/webhook"}) == PUBLIC_API_PATHS
     assert {r.path for r in api_routes(app)} >= {"/api/v1/auth/login", "/api/v1/auth/me", "/api/v1/auth/logout"}
 
 

@@ -138,3 +138,11 @@ def test_formatter_never_raises() -> None:
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "%s %s", ("only-one",), None)
     line = json.loads(JsonFormatter("api", "test").format(record))
     assert line["event"] == "log.format_error"
+
+
+def test_keys_ending_in_a_sensitive_word_are_redacted() -> None:
+    """P5.2: Meta's challenge query (`hub.verify_token=`) and `app_secret:` style keys never reach a log line."""
+    from app.core.logging import scrub_text  # noqa: PLC0415
+
+    line = scrub_text("GET /webhook?hub.mode=subscribe&hub.verify_token=s3cr3t-v&hub.challenge=1 app_secret: s3cr3t-a")
+    assert "s3cr3t-v" not in line and "s3cr3t-a" not in line and "hub.challenge=1" in line

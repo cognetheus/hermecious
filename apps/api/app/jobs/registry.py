@@ -185,6 +185,20 @@ class SimulationRunPayload(_Payload):
     run_id: uuid.UUID
 
 
+def _provider_inbox(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.core.settings import load_settings  # noqa: PLC0415
+    from app.whatsapp.inbox import handle  # noqa: PLC0415  # avoids an import cycle
+
+    result: dict[str, Any] = handle(db, ctx, payload, load_settings())
+    return result
+
+
+class ProviderInboxPayload(_Payload):
+    """`provider_inbox.process` v1 (P5.2): process signed inbound webhook items. Receives facts; never sends."""
+
+    connection_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -211,6 +225,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         DiscoveryRunPayload,
         _discovery_run,
         max_attempts=3,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("provider_inbox.process", 1): JobSpec(
+        "provider_inbox.process",
+        1,
+        ProviderInboxPayload,
+        _provider_inbox,
+        max_attempts=5,
         environments=frozenset({"development", "test", "production"}),
     ),
     ("simulation.run", 1): JobSpec(

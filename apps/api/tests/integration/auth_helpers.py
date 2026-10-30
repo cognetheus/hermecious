@@ -68,3 +68,8 @@ def logged_in(client: TestClient, email: str, password: str = PASSWORD) -> str:
 
 def mutation_headers(csrf: str, **extra: Any) -> dict[str, str]:
     return {**ORIGIN, "X-CSRF-Token": csrf, **extra}
+
+
+# P5.2 (ADR-027) stores *inbound* provider facts. These are the only tables whose names contain "message" by design;
+# guards that prove "no outbound message store exists" exclude exactly these, never by pattern.
+INBOUND_PROVIDER_TABLES = frozenset({"provider_inbound_messages", "provider_message_status"})

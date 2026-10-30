@@ -6,7 +6,8 @@ row (actor, reasons, input digest, policy version; never an address or proof) an
 
 Trust boundary:
 - template approval comes only from signed synthetic fixtures (non-production, synthetic accounts only);
-- inbound service context comes only from signed synthetic fixtures; a client never supplies a time;
+- inbound service context comes from signed synthetic fixtures or (P5.2) a verified Meta webhook for this exact
+  contact; a client never supplies a time, and an inbound message is never marketing consent;
 - campaign, gate, offer, evidence and membership state come from the same checks Draft Studio uses;
 - usage counters are zero for real readings (no send ledger exists); the P4.5 simulator passes its own simulated counts.
 """
@@ -35,6 +36,7 @@ from app.core.settings import Settings
 from app.drafts import service as drafts
 from app.eligibility import fixtures, policy
 from app.evaluation import service as evaluation
+from app.whatsapp.models import ProviderServiceWindow
 
 NOTICE = "Simulation eligibility only — sending disabled"
 FIXTURE_BLOCKER = "fixture_requires_synthetic_account_outside_production"
@@ -140,6 +142,16 @@ def decide(
             key = dict(contacts.keyring(settings).keys).get(contact.key_id)
             matches = key is not None and addresses.digest(key, message["address"]) == contact.address_digest
             inbound = policy.InboundFact(inbound_ref, message["received_at"], matches)
+    elif purpose == "service_reply":  # P5.2: a signed, verified inbound message from this exact contact
+        window = db.scalar(
+            select(ProviderServiceWindow).where(
+                ProviderServiceWindow.organization_id == org, ProviderServiceWindow.contact_id == contact.id
+            )
+        )
+        if window is not None:
+            inbound = policy.InboundFact(
+                f"verified:{window.provider_message_id}", window.last_verified_inbound_at, True
+            )
 
     permissions = tuple(
         policy.PermissionFact(
