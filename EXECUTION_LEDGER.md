@@ -2346,3 +2346,77 @@ The "settings read once per run" mutant was first caught incidentally (a `NameEr
 - **A slow environment caused one flake:** a mobile E2E login timed out (5 s) during that slow phase, then passed on rerun (30 + 11).
 
 **P5.2 readiness:** YES (engineering). **Production outreach-readiness:** NO.
+
+## P5.2 — Signed webhook receiver, durable inbox and reconciliation (2026-10-30)
+
+**Scope:** `HERMECIOUS_BATCH_08_P5.1-P5.3.md` §P5.2. **Base:** P5.1 (`229fd5a`). **Head:** `e0949ad` (implementation; see the push note below), then this ledger. **Migration:** `0021_provider_webhook_inbox` (additive); the dev database is upgraded to `0021`.
+
+### Inventory
+
+- **No inbox existed:** no `inbound_events`, `messages` or `conversations` tables. The new tables are additive and named as provider inbound records.
+- **Reused:** the P1.5 job and outbox, P4.3 keyed contact digests and suppressions, the P0.4 error envelope, and the ADR-025 lease heartbeat.
+- **External:** no Meta callback is subscribed; everything is verified with locally signed synthetic payloads.
+
+### Design (ADR-027 Proposed; contract and runbook updated)
+
+- **Public endpoints by design:** the GET challenge (constant-time verify token, bounded challenge) and the POST receiver.
+  - The POST caps the raw body at 256 KiB, verifies the HMAC over the exact bytes before parsing, and fails closed without a secret.
+  - It answers 200 only after a durable commit and 503 on storage failure.
+- **Binding comes from configuration only.** WABA, phone and mode must match; anything else is unmapped and stores no tenant data.
+- **Per-item dedupe** by logical key, with arrival order from a DB identity; quarantine reasons are recorded.
+- **The `provider_inbox.process` job** processes items one transaction at a time with `SKIP LOCKED`.
+- **Status projection:** never downgrades; `failed_after_delivered` and `success_after_failed` are flagged.
+- **Inbound:**
+  - the sender is kept as a keyed digest, with no text body;
+  - a known contact gets a service window (`max`), never consent;
+  - an unknown sender stays unassigned;
+  - an authenticated STOP creates a suppression.
+- **P4.3 `decide()`** now uses the verified service window for service replies; it is still simulation-only.
+
+### Acceptance evidence
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| WAHOOK-01 | `test_wahook_01_…` | The correct token returns the challenge as `text/plain`. A wrong token, wrong mode, markup challenge, over-length challenge, missing token or unset verify token gives a bodyless 403. The token is not in captured logs | VERIFIED |
+| WAHOOK-02 | `test_wahook_02_…` | A signed body → 200 (1 accepted). One changed byte, a wrong secret, `sha1=`, non-hex or unsigned → 401; 1 envelope and 1 item, so nothing forged is stored. Secret unset → 503 | VERIFIED |
+| WAHOOK-03 | `test_wahook_03_…` | Mixed batch (2 entries; message + statuses across changes; a foreign phone): 3 items, all on the right org; 1 unmapped counted and not stored. After processing: 1 inbound, 2 observations, projection `delivered` (2 observations) | VERIFIED |
+| WAHOOK-04 | `test_wahook_04_…` | An exact retry accepts 0; an overlapping batch accepts only the new item. 2 inbound, 2 items, 3 envelopes (each delivery audited) | VERIFIED |
+| WAHOOK-05 | `test_wahook_05_…` | Storage failure → 503 `storage_unavailable`, 0 items. The retry after recovery → 200, 1 item | VERIFIED |
+| WAHOOK-06 | `test_wahook_06_…` | A crash before commit → `retry_wait`, nothing half-applied. Two racing workers after the backoff → exactly 6 inbound and 6 processed for 6 messages | VERIFIED |
+| WAHOOK-07 | `test_wahook_07_…` | Arrival order read → sent → delivered: all 4 observations kept, projection `read`; a later `failed` → `read` plus conflict `failed_after_delivered`. Failed then delivered → `delivered` plus `success_after_failed` | VERIFIED |
+| WAHOOK-08 | `test_wahook_08_…` | Wrong WABA or phone → unmapped; foreign object or bad JSON → quarantined envelope (200, no retries); >256 KiB → 413; text/plain → 415; `account_update` → a quarantined item; a sticker → inbound `unsupported`. Only the bound org has items; no 500 | VERIFIED |
+| WAHOOK-09 | `test_wahook_09_…` | Known contact: window = max (−30 min, not the later-arriving −60 min). An unknown sender is unassigned and creates no contact. A future timestamp is quarantined. Service reply → `allow_for_simulation` (not live); marketing → `no_opt_in_permission`. STOP from known and unknown senders → 2 `opt_out` suppressions (contact and bare); service reply → `deny suppressed` | VERIFIED |
+| WAHOOK-10 | `test_wahook_10_…`; `test_keys_ending_in_a_sensitive_word_are_redacted` | Uses `hmac.compare_digest` (2 sites). POST < 2 s (commit only). Logs contain no secret, verify token, body text or number; stored items contain no body text or raw number. The only job is `provider_inbox.process`; the egress client was never built | VERIFIED |
+
+### Incidental fixes
+
+- **Verify token in log lines.** A log line carrying a full URL (the HTTP client in tests; uvicorn's access log is disabled in production) contained `hub.verify_token=…`. The redactor matched only a bare `token=` key, so it now masks any key ending in a sensitive word.
+- **Random processing order.** Items received in the same instant were processed in random-UUID order; a DB `arrival_seq` identity now orders them.
+- **Pinned public allowlist.** The route-protection contract pinned the public allowlist to login. It now pins exactly login and the webhook (ADR-027). The startup guard still fails on any other unprotected route.
+- **Table-name guards.** Older guards against message tables now exclude exactly the two named inbound tables (`INBOUND_PROVIDER_TABLES`), not by pattern.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/check.sh` | 1 → fixed | Unit + contract: only the pinned allowlist contract failed (intended change, updated). Integration **409**, e2e **30 + 11** passed in that run |
+| `uv run pytest tests/contracts` after the update | 0 | 36 passed |
+
+### Mutation checks (restored with `git checkout`; tree clean)
+
+9 of 10 were caught:
+- signature not checked (WAHOOK-02);
+- verify token not checked (01);
+- WABA binding ignored (08);
+- projection downgrades (07);
+- future timestamp accepted (09);
+- STOP ignored (09);
+- window not `max` (09);
+- ack before commit (02);
+- unset secret accepted (02).
+
+**Survived:** W7, "re-processed message repeats side effects". It is an **equivalent mutant**: every side effect behind that early return (service window, suppression and its audit) is itself idempotent (conflict-safe insert or update), so removing the guard changes nothing observable. The guard is kept as defence in depth.
+
+**Push note:** GitHub answered `Internal Server Error` for the first push of `e0949ad`; it was retried with this ledger commit.
+
+**P5.3 readiness:** YES (engineering). **Production outreach-readiness:** NO.
