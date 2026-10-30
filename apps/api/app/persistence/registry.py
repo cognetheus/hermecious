@@ -17,3 +17,4 @@ def register_models() -> None:
     import app.resolution.models  # noqa: F401
     import app.signals.models  # noqa: F401
     import app.simulations.models  # noqa: F401
+    import app.whatsapp.models  # noqa: F401

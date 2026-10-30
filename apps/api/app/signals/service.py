@@ -88,7 +88,7 @@ def generate(db: Session, *, actor: Actor, clock: Clock, account_id: uuid.UUID) 
     db.scalar(select(Account.id).where(Account.organization_id == org, Account.id == account_id).with_for_update())
     facts, links = evidence(db, org, account_id)
     digest, inputs = rubric.input_digest(facts, now, links)
-    head = _newest(db, org, account_id)
+    head = newest(db, org, account_id, digest)
     if head is not None and (head.rubric_version, head.input_digest) == (rubric.RUBRIC_VERSION, digest):
         db.commit()
         return head, False
@@ -106,13 +106,30 @@ def generate(db: Session, *, actor: Actor, clock: Clock, account_id: uuid.UUID) 
     return snapshot, True
 
 
-def _newest(db: Session, org: uuid.UUID, account_id: uuid.UUID) -> SchoolSignalSnapshot | None:
-    return db.scalar(
-        select(SchoolSignalSnapshot)
-        .where(SchoolSignalSnapshot.organization_id == org, SchoolSignalSnapshot.account_id == account_id)
-        .order_by(SchoolSignalSnapshot.created_at.desc(), SchoolSignalSnapshot.id.desc())
-        .limit(1)
+def newest(
+    db: Session, org: uuid.UUID, account_id: uuid.UUID, digest: str | None = None
+) -> SchoolSignalSnapshot | None:
+    """The current brief: the latest by time; among equal times, the one matching `digest` (deterministic)."""
+    latest_at = db.scalar(
+        select(func.max(SchoolSignalSnapshot.created_at)).where(
+            SchoolSignalSnapshot.organization_id == org, SchoolSignalSnapshot.account_id == account_id
+        )
     )
+    if latest_at is None:
+        return None
+    tied = list(
+        db.scalars(
+            select(SchoolSignalSnapshot)
+            .where(
+                SchoolSignalSnapshot.organization_id == org,
+                SchoolSignalSnapshot.account_id == account_id,
+                SchoolSignalSnapshot.created_at == latest_at,
+            )
+            .order_by(SchoolSignalSnapshot.id)
+        )
+    )
+    match = next((t for t in tied if (t.rubric_version, t.input_digest) == (rubric.RUBRIC_VERSION, digest)), None)
+    return match or tied[-1]
 
 
 def _citations(db: Session, org: uuid.UUID, snapshot: SchoolSignalSnapshot, now: datetime) -> dict[str, Any]:
@@ -168,7 +185,7 @@ def latest(db: Session, org: uuid.UUID, account_id: uuid.UUID, now: datetime) ->
     )
     facts, links = evidence(db, org, account_id)
     current_digest, _ = rubric.input_digest(facts, now, links)
-    head = history[0] if history else None
+    head = newest(db, org, account_id, current_digest)
     return {
         "latest": snapshot_view(db, head, now) if head else None,
         "needs_reassessment": (

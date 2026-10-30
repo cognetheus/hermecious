@@ -1,0 +1,1 @@
+{"error": {"message": "Synthetic fixture: rate limit hit.", "type": "OAuthException", "code": 130429, "fbtrace_id": "SYNTHETICTRACE02"}}

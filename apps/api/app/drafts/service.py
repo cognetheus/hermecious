@@ -39,7 +39,6 @@ from app.qualification import service as qualification
 from app.qualification.models import Assessment
 from app.signals import rubric as signal_rubric
 from app.signals import service as signal_service
-from app.signals.models import SchoolSignalSnapshot
 
 NOTICE = "DRAFT ONLY — NOT APPROVED FOR SENDING"
 
@@ -98,7 +97,7 @@ def blockers(
 
 def _context(db: Session, campaign: Campaign, account: Account, now: datetime) -> dict[str, Any]:
     org = campaign.organization_id
-    facts, _ = signal_service.evidence(db, org, account.id)
+    facts, links = signal_service.evidence(db, org, account.id)
     usable = {f.fact_id for f in facts if signal_rubric.eligibility(f, now) == "usable"}
     revision = db.get(OfferRevision, campaign.offer_revision_id)
     claims = []
@@ -115,12 +114,7 @@ def _context(db: Session, campaign: Campaign, account: Account, now: datetime) -
             )
             for c in content.approved_claims()
         ]
-    snapshot = db.scalar(
-        select(SchoolSignalSnapshot)
-        .where(SchoolSignalSnapshot.organization_id == org, SchoolSignalSnapshot.account_id == account.id)
-        .order_by(SchoolSignalSnapshot.created_at.desc(), SchoolSignalSnapshot.id.desc())
-        .limit(1)
-    )
+    snapshot = signal_service.newest(db, org, account.id, signal_rubric.input_digest(facts, now, links)[0])
     questions: list[tuple[str, str]] = []
     if snapshot is not None:
         signals = snapshot.signals_json["signals"]

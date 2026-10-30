@@ -24,7 +24,11 @@ HERMECIOUS_CONTACT_HMAC_SECRETS="test:$(openssl rand -hex 32)"
 export POSTGRES_PASSWORD HERMECIOUS_CONTACT_HMAC_SECRETS
 compose() { docker compose --env-file /dev/null -p "$project" --profile test "$@"; }
 
-cleanup() { compose down -v --remove-orphans >/dev/null 2>&1; }
+cleanup() {
+  compose down -v --remove-orphans >/dev/null 2>&1
+  # Drop the images this run built (named "<project>-<service>"), so disposable runs do not pile up.
+  docker images -q --filter "reference=${project}-*" | xargs docker rmi -f >/dev/null 2>&1
+}
 trap cleanup EXIT
 
 echo "Integration project: $project"

@@ -2299,3 +2299,50 @@ The "settings read once per run" mutant was first caught incidentally (a `NameEr
 | First run of the new discovery tests | 1 | RUN-01 asserted the offered source list was only the fixture; the CSV review source is now offered too. The assertion was updated |
 
 **Production outreach-readiness: still NO.** P3.4 EVAL-07 (real audit) is still blocked, there is no real opt-in, and there are no provider templates. Live OSM still needs the owner's rights review settings.
+
+## P5.1 — Typed official WhatsApp adapter and transport contracts (2026-10-29)
+
+**Scope:** `HERMECIOUS_BATCH_08_P5.1-P5.3.md` §0 and §P5.1. The batch asks to stop after each subphase; the owner's standing instruction is to run subphases back to back and stop only for real blockers, so P5.2 follows. **Base:** `36d545d`. **Migration:** `0020_provider_connections` (additive).
+
+### Inventory
+
+- **Existing pieces:** `FakeWhatsAppTransport` (P4.5) is the only transport. `PinnedHttpsClient` (ADR-013) is the only HTTP client. P1.5 has no send job. Errors follow the P0.4 taxonomy.
+- **No HTTP library:** there is no runtime `httpx`, so the existing pinned client is extended instead of adding a dependency.
+- **External facts verified 2026-10-29 (no API call made):**
+  - Graph API **v26.0** (2026-07-29) is the latest; v25.0 is supported until 2028-07-29.
+  - The send success shape is `messages[].id` + `message_status` ∈ {accepted, held_for_quality_assessment, paused}.
+
+### Design (ADR-026 Proposed; contract `docs/contracts/whatsapp.md`)
+
+- **Fail-closed modes** (`simulation` default, `contract_test`, `provider_test`, `production`) are checked at startup.
+  - `HERMECIOUS_LIVE_OUTBOUND_ENABLED=true` **refuses to start**.
+  - `provider_test` needs a non-production environment, all test-identity confirmation fields, and a phone not in the production list.
+- **`build_transport` never elevates:** simulation and production → `LiveTransportForbidden`.
+- **Org-bound `provider_connections`:** one per organization, a phone belongs to exactly one organization, digits-only IDs.
+- **Template-only transport:**
+  - plain-text capped parameters, an APPROVED template whose category fits the purpose, recipient only via `ResolvedRecipient`;
+  - outcomes `accepted`, `definitive_rejected` or `indeterminate` (never resent);
+  - only the numeric provider error code is kept.
+
+### Acceptance evidence (all offline; zero network)
+
+| ID | Test(s) | Observed | Status |
+|---|---|---|---|
+| WAAD-01 | `test_waad_01_…` | Exact template payload; 0 calls while building. 11 parameters or 201 characters refused; placeholder mismatch, PENDING/PAUSED, AUTHENTICATION/unknown category, wrong name or WABA, and `service_text` all refused | VERIFIED |
+| WAAD-02 | `test_waad_02_…` (×3, 10 cases) | `phone_number`, `to`, `recipient_url`, `base_url` and `body` refused (`extra=forbid`). Links, numbers and bidi characters refused in parameters. Host and path fixed; non-digit IDs refused; another host or phone, or http, gives `EgressDenied` before DNS; recipient mismatch refused | VERIFIED |
+| WAAD-03 | `test_waad_03_…` (×3, 11 setting cases) | Simulation and production raise `LiveTransportForbidden`. contract_test needs a fake and the test environment; a mode mismatch or a credential mismatch is refused. Each misconfiguration names only the setting (never the token). The live outbound flag refuses to start | VERIFIED |
+| WAAD-04 | `test_waad_04_…` | 200 → `accepted` + `wamid` + `message_status`; `held_for_quality_assessment` is still only accepted; no delivered or read fields | VERIFIED |
+| WAAD-05 | `test_waad_05_…` (×6) | 400 → bad_request; 401/190 and 403 → auth; 429 and code 130429 → quota (retriable); 503 → transient (retriable). Provider message text is never kept; exactly 1 call | VERIFIED |
+| WAAD-06 | `test_waad_06_…` | A post-write failure → `indeterminate`, not retriable, 1 call. A connect failure before the write → definitive and retriable | VERIFIED |
+| WAAD-07 | `test_waad_07_…` (×8) | Malformed, empty, 0 or 2 messages, a bad wamid, `message_status: sent`, or oversized → `indeterminate`, no id. A non-JSON 400 is typed | VERIFIED |
+| WAAD-08 | `test_waad_08_…` | The token is used only as the bearer value; neither the token nor the recipient (with or without +) appears in the result, settings repr or JSON logs | VERIFIED |
+| WAAD-09 | `test_waad_09_connections_are_org_bound_…` | Bind is idempotent; the same phone for another org → 409; the other org → 404; configured credentials for another phone → 403 (no fallthrough); a foreign intent is refused before any call; the DB refuses a non-digit ID | VERIFIED |
+| WAAD-10 | `test_waad_10_…`; SIM suites | Nothing in `app/` imports the transport; the simulator never imports `app.whatsapp`; no send/whatsapp/dispatch job type; no WhatsApp route; egress users are exactly `discovery/osm.py` and `whatsapp/transport.py`. SIM-09 now proves the live flag refuses to start | VERIFIED |
+
+### Incidental fixes found while verifying
+
+- **Tied timestamps picked the wrong brief.** The 2026-10-25 brief dedupe chose the "newest" snapshot by `(created_at, id)`. With tied timestamps (the test clock, or the same microsecond) it could pick an older brief, and SCHOOL-08 caught 3 concurrent generations creating 3 snapshots. Now `signals.newest()` is tie-aware (it prefers the brief matching the current digest), and the Draft Studio uses it too.
+- **Disposable test images piled up.** Integration and E2E runs left 475 images (Docker became unstable). Both scripts now remove the images their run built; the 475 leftovers were removed. Only `hermecious-test-*` and `hermecious-e2e-*` images were touched.
+- **A slow environment caused one flake:** a mobile E2E login timed out (5 s) during that slow phase, then passed on rerun (30 + 11).
+
+**P5.2 readiness:** YES (engineering). **Production outreach-readiness:** NO.

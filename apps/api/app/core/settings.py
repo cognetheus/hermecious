@@ -57,8 +57,45 @@ class Settings(BaseSettings):
     contact_hmac_secrets: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_CONTACT_HMAC_SECRETS")
     # Global outreach stop: when true, every channel-eligibility decision is `deny` (kill_switch_engaged).
     outreach_kill_switch: bool = Field(default=False, validation_alias="HERMECIOUS_OUTREACH_KILL_SWITCH")
+    # Batch 07/08: real outbound to prospects stays off until P5.5. `true` refuses to start (never silently ignored).
+    live_outbound_enabled: bool = Field(default=False, validation_alias="HERMECIOUS_LIVE_OUTBOUND_ENABLED")
+    # P5.1 (ADR-026): WhatsApp Cloud API binding. See app/whatsapp/config.py for the per-mode rules.
+    whatsapp_mode: Literal["simulation", "contract_test", "provider_test", "production"] = Field(
+        default="simulation", validation_alias="HERMECIOUS_WHATSAPP_MODE"
+    )
+    whatsapp_graph_version: str = Field(default="v26.0", validation_alias="HERMECIOUS_WHATSAPP_GRAPH_VERSION")
+    whatsapp_waba_id: str | None = Field(default=None, validation_alias="HERMECIOUS_WHATSAPP_WABA_ID")
+    whatsapp_phone_number_id: str | None = Field(default=None, validation_alias="HERMECIOUS_WHATSAPP_PHONE_NUMBER_ID")
+    whatsapp_access_token: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_WHATSAPP_ACCESS_TOKEN")
+    whatsapp_app_secret: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_WHATSAPP_APP_SECRET")
+    whatsapp_verify_token: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_WHATSAPP_VERIFY_TOKEN")
+    # Known production phone-number IDs: provider_test refuses to run against any of them.
+    whatsapp_production_phone_number_ids: str = Field(
+        default="", validation_alias="HERMECIOUS_WHATSAPP_PRODUCTION_PHONE_NUMBER_IDS"
+    )
+    # provider_test only: who confirmed (Meta dashboard checklist) that the WABA and phone are Meta test assets.
+    whatsapp_test_identity_confirmed_by: str | None = Field(
+        default=None, max_length=120, validation_alias="HERMECIOUS_WHATSAPP_TEST_IDENTITY_CONFIRMED_BY"
+    )
+    whatsapp_test_identity_confirmed_at: datetime | None = Field(
+        default=None, validation_alias="HERMECIOUS_WHATSAPP_TEST_IDENTITY_CONFIRMED_AT"
+    )
+    # P5.3 separate test-outbound kill switch; off by default and never a production override.
+    whatsapp_test_outbound_enabled: bool = Field(
+        default=False, validation_alias="HERMECIOUS_WHATSAPP_TEST_OUTBOUND_ENABLED"
+    )
 
-    @field_validator("contact_hmac_secrets", mode="before")
+    @field_validator(
+        "contact_hmac_secrets",
+        "whatsapp_waba_id",
+        "whatsapp_phone_number_id",
+        "whatsapp_access_token",
+        "whatsapp_app_secret",
+        "whatsapp_verify_token",
+        "whatsapp_test_identity_confirmed_by",
+        "whatsapp_test_identity_confirmed_at",
+        mode="before",
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         return None if value == "" else value
@@ -103,6 +140,12 @@ class Settings(BaseSettings):
                 parse_keyring(self.contact_hmac_secrets.get_secret_value())
             except KeyringError:
                 raise ValueError("HERMECIOUS_CONTACT_HMAC_SECRETS") from None
+        if self.live_outbound_enabled:  # cannot be enabled before the P5.5 go/no-go (Batch 08 §0.1.2)
+            raise ValueError("HERMECIOUS_LIVE_OUTBOUND_ENABLED")
+        from app.whatsapp.config import whatsapp_setting_error  # noqa: PLC0415
+
+        if (offending := whatsapp_setting_error(self)) is not None:
+            raise ValueError(offending)
         if self.environment == "production":
             if self.contact_hmac_secrets is None:
                 raise ValueError("HERMECIOUS_CONTACT_HMAC_SECRETS")
@@ -116,7 +159,7 @@ class Settings(BaseSettings):
 
     def __repr_args__(self) -> Any:
         for name, value in super().__repr_args__():
-            yield name, ("***" if name in {"database_url", "redis_url"} else value)
+            yield name, ("***" if name in {"database_url", "redis_url"} else value)  # SecretStr fields mask themselves
 
 
 def _is_exact_origin(origin: str) -> bool:

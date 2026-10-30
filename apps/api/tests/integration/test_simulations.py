@@ -403,7 +403,12 @@ def test_sim_09_network_spy_registry_and_kill_switch_prove_zero_real_sends(
 
     monkeypatch.setattr(socket.socket, "connect", spy)
     monkeypatch.setattr(https_client.PinnedHttpsClient, "__init__", no_egress)
-    monkeypatch.setenv("HERMECIOUS_LIVE_OUTBOUND_ENABLED", "true")  # cannot enable anything in P4.x
+    from app.core.settings import SettingsError, load_settings  # noqa: PLC0415
+
+    monkeypatch.setenv("HERMECIOUS_LIVE_OUTBOUND_ENABLED", "true")  # Batch 08: refused outright, never ignored
+    with pytest.raises(SettingsError, match="HERMECIOUS_LIVE_OUTBOUND_ENABLED"):
+        load_settings()
+    monkeypatch.delenv("HERMECIOUS_LIVE_OUTBOUND_ENABLED")
     run = world.execute()
     assert of(run, world.first[0])["lifecycle"] == "sim_delivered"
     assert connects == []  # no socket was opened while the run executed (Postgres uses libpq, not Python sockets)
@@ -414,7 +419,8 @@ def test_sim_09_network_spy_registry_and_kill_switch_prove_zero_real_sends(
         assert forbidden not in source, forbidden
     import sys  # noqa: PLC0415
 
-    assert not [m for m in sys.modules if any(w in m.lower() for w in ("twilio", "pywa", "heyoo", "whatsapp"))]
+    third_party = [m for m in sys.modules if m not in ("app", "tests") and not m.startswith(("app.", "tests."))]
+    assert not [m for m in third_party if any(w in m.lower() for w in ("twilio", "pywa", "heyoo", "whatsapp"))]
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "message", "dispatch", "deliver"))]
     with db(app) as session:
         tables = set(session.scalars(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")))
