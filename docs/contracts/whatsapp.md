@@ -91,3 +91,28 @@ All routes are under `/api/v1/inbox/whatsapp`. Only owners and operators can use
 **Entry shapes:**
 - **inbound:** `{type: "inbound", id, at, seq, kind, text|null, content, truncated, stop_signal, provenance: "verified_inbound"}`. `content` is one of `available`, `not_retained`, `expired`, `unreadable` or `not_text`.
 - **test outbound:** `{type: "test_outbound", id, at, state, template, provider_message_id, error_class, delivery, statuses[{status, at, error_code, provenance: "signed_webhook"}], provenance: "provider_test"}`.
+
+## P5.5 production go/no-go ([ADR-030](../adr/ADR-030-production-go-no-go-and-pilot-gate.md))
+
+All routes are under `/api/v1/release/whatsapp`. Only owners and operators can read them; observers get 403. Every response carries `private, no-store`. Request bodies reject unknown fields with 422.
+
+| Route | Roles | Result |
+|---|---|---|
+| `GET /readiness` | owner, operator | latest assessment, attestations, authorizations, `live_gate` (`open` or a reason), banner, acknowledgement text |
+| `POST /readiness/evaluate` | owner | 201 immutable assessment `{status: no_go\|blocked_external\|ready_for_operator_review, checks[], digest, expires_at, grants_sending: false}` |
+| `POST /attestations` | owner | `{kind, statement (20–1000), evidence_ref (10–500)}` |
+| `POST /catalog/sync` | owner | read-only Meta catalog for the production connection (production mode only) |
+| `POST /pilot` | owner | `{assessment_id, acknowledgement (exact), purpose, max_per_day ≤3, days ≤14}`. Needs a fresh ready assessment whose digest still matches; another tenant's id → 404 |
+| `POST /pilot/{id}/pause\|resume\|revoke` | owner | pause reasons: `human_takeover`, `quality_alert`, `investigation`, `opt_out_review`. Revoke is final |
+| `POST /pilot-sends` | owner, operator | `{draft_id, parameters[], idempotency_key}` → a non-sending preview with a one-time `confirmation_nonce` |
+| `POST /pilot-sends/{id}/confirm` | owner | `{preview_digest, confirmation_nonce, recipient_number}` → at most one Graph call; 409 `pilot send denied: <reason>`; a replay returns `replayed: true` |
+| `POST /pilot-sends/{id}/cancel`, `/mark-indeterminate` | owner, operator / owner | as for P5.3 |
+
+**Denial reasons:**
+- `not_production_environment`, `not_production_mode`, `live_outbound_disabled`;
+- `pilot_<pause reason>`, `pilot_not_active`;
+- `connection_mismatch`, `connection_changed`;
+- `daily_cap_reached`, `readiness_invalidated`, `approval_stale`;
+- `eligibility_<deny|defer>:<codes>`;
+- `template_check_failed_<class>`, `template_changed`;
+- `stopped_before_send`.

@@ -175,8 +175,29 @@ def test_waad_03_factory_never_elevates_a_mode() -> None:
     with pytest.raises(LiveTransportForbidden):
         wa.build_transport(make_settings(), connection(), lambda: NOW, http=graph)  # simulation (default)
     production = make_settings().model_copy(update={"whatsapp_mode": "production"})
-    with pytest.raises(LiveTransportForbidden, match="P5.5"):
-        wa.build_transport(production, connection(ProviderEnvironment.PRODUCTION), lambda: NOW, http=graph)
+    prod = connection(ProviderEnvironment.PRODUCTION)
+    with pytest.raises(LiveTransportForbidden, match="never use a production connection"):
+        wa.build_transport(production, prod, lambda: NOW, http=graph)  # a P5.3 test send
+    with pytest.raises(LiveTransportForbidden, match="go-live"):  # P5.5: the deploy-time live gate is closed
+        wa.build_transport(production, prod, lambda: NOW, http=graph, purpose="production_send")
+    live_but_not_production = production.model_copy(update={"live_outbound_enabled": True})  # environment "test"
+    with pytest.raises(LiveTransportForbidden, match="go-live"):
+        wa.build_transport(live_but_not_production, prod, lambda: NOW, http=graph, purpose="production_send")
+    test_with_live = make_settings(whatsapp_mode="contract_test").model_copy(update={"live_outbound_enabled": True})
+    with pytest.raises(LiveTransportForbidden, match="never carry production traffic"):
+        wa.build_transport(test_with_live, connection(), lambda: NOW, http=graph)
+    with pytest.raises(LiveTransportForbidden, match="never carry production traffic"):
+        wa.build_transport(make_settings(whatsapp_mode="contract_test"), connection(), lambda: NOW, http=graph,
+                           purpose="production_read")  # fmt: skip
+    reader = production.model_copy(update={
+        "whatsapp_waba_id": "100000000000001", "whatsapp_phone_number_id": "200000000000002",
+        "whatsapp_access_token": SecretStr(TOKEN),
+    })  # fmt: skip
+    read_only = wa.build_transport(reader, prod, lambda: NOW, http=graph, purpose="production_read")
+    assert read_only.can_send is False and read_only.real_network is False
+    with pytest.raises(wa.ProviderCallError, match="read-only"):
+        read_only.send_template(intent(), RECIPIENT_RESOLVED, template())
+    assert graph.calls == []
     with pytest.raises(LiveTransportForbidden):
         wa.build_transport(make_settings(whatsapp_mode="contract_test"), connection(), lambda: NOW)  # no fake
     with pytest.raises(LiveTransportForbidden):
@@ -333,9 +354,10 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
     api = Path(__file__).parents[2] / "app"
     imports = re.compile(r"app\.whatsapp\.transport|from app\.whatsapp import [^\n]*\btransport\b")
     users = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if imports.search(p.read_text()))
-    assert users == ["whatsapp/test_sends.py"]  # P5.3: the one guarded, owner-confirmed test sender
+    # P5.3: the guarded test sender; P5.5: the gated pilot sender and the read-only production catalog reader.
+    assert users == ["release/pilot.py", "release/service.py", "whatsapp/test_sends.py"]
     senders = sorted(str(p.relative_to(api)) for p in api.rglob("*.py") if ".send_template(" in p.read_text())
-    assert senders == ["whatsapp/test_sends.py"]
+    assert senders == ["release/pilot.py", "whatsapp/test_sends.py"]
     simulator = "\n".join(p.read_text() for p in (api / "simulations").glob("*.py"))
     assert "app.whatsapp" not in simulator and "graph.facebook.com" not in simulator
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "whatsapp", "dispatch"))]
@@ -352,6 +374,11 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
         f"{base}/test-sends/{{send_id}}/confirm", f"{base}/test-sends/{{send_id}}/cancel",
         f"{base}/test-sends/{{send_id}}/mark-indeterminate",
         "/api/v1/inbox/whatsapp/rebuild", "/api/v1/inbox/whatsapp/threads/{thread_id}/review",  # P5.4: local only
+        *(f"/api/v1/release/whatsapp/{p}" for p in (  # P5.5: every one owner-gated; only confirm can send
+            "readiness/evaluate", "attestations", "catalog/sync", "pilot", "pilot/{auth_id}/pause",
+            "pilot/{auth_id}/resume", "pilot/{auth_id}/revoke", "pilot-sends", "pilot-sends/{send_id}/confirm",
+            "pilot-sends/{send_id}/cancel", "pilot-sends/{send_id}/mark-indeterminate",
+        )),
     ])  # fmt: skip
 
 

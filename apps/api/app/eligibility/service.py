@@ -15,7 +15,7 @@ Trust boundary:
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -36,7 +36,7 @@ from app.core.settings import Settings
 from app.drafts import service as drafts
 from app.eligibility import fixtures, policy
 from app.evaluation import service as evaluation
-from app.whatsapp.models import ProviderServiceWindow
+from app.whatsapp.models import ProviderServiceWindow, ProviderTemplate
 
 NOTICE = "Simulation eligibility only — sending disabled"
 FIXTURE_BLOCKER = "fixture_requires_synthetic_account_outside_production"
@@ -87,6 +87,23 @@ def _active(db: Session, org: uuid.UUID, user_id: uuid.UUID | None) -> bool:
     return bool(db.scalar(select(User.active).where(User.organization_id == org, User.id == user_id)))
 
 
+META_PREFIX = "meta:"
+META_FRESHNESS = timedelta(hours=24)
+
+
+def _meta_template(db: Session, org: uuid.UUID, ref: str, now: datetime) -> policy.TemplateFact:
+    """A synced Meta catalog row counts as a verified provider record only while fresh; otherwise it is unknown."""
+    row = db.scalar(
+        select(ProviderTemplate)
+        .where(ProviderTemplate.organization_id == org, ProviderTemplate.template_id == ref.removeprefix(META_PREFIX))
+        .order_by(ProviderTemplate.fetched_at.desc())
+        .limit(1)
+    )
+    if row is None or now - row.fetched_at > META_FRESHNESS or not row.supported:
+        return policy.TemplateFact(ref, False, "unknown", "unknown")
+    return policy.TemplateFact(ref, True, row.provider_status.lower(), row.category.lower())
+
+
 def decide(
     db: Session,
     *,
@@ -126,6 +143,8 @@ def decide(
         entry = fixtures.template(template_ref) if template_ref.startswith(fixtures.PREFIX) else None
         if template_ref.startswith(fixtures.PREFIX) and not fixtures_allowed:
             template_blocker = FIXTURE_BLOCKER
+        elif template_ref.startswith(META_PREFIX):  # P5.5: Meta's own catalog row, as last fetched from Meta
+            template = _meta_template(db, org, template_ref, now)
         elif entry is not None:
             template = policy.TemplateFact(template_ref, True, entry["provider_status"], entry["category"])
         else:  # operator-entered or unknown: never provider-approved

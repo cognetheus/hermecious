@@ -62,8 +62,18 @@ class Settings(BaseSettings):
     )
     # Global outreach stop: when true, every channel-eligibility decision is `deny` (kill_switch_engaged).
     outreach_kill_switch: bool = Field(default=False, validation_alias="HERMECIOUS_OUTREACH_KILL_SWITCH")
-    # Batch 07/08: real outbound to prospects stays off until P5.5. `true` refuses to start (never silently ignored).
+    # P5.5 (ADR-030): the deploy-time live gate. `true` refuses to start unless this is a production environment in
+    # WhatsApp production mode with an identified build and a named human approval. It is necessary, never
+    # sufficient: each send also needs a fresh ready assessment, an owner pilot authorization and every per-send check.
     live_outbound_enabled: bool = Field(default=False, validation_alias="HERMECIOUS_LIVE_OUTBOUND_ENABLED")
+    live_outbound_approved_by: str | None = Field(
+        default=None, max_length=120, validation_alias="HERMECIOUS_LIVE_OUTBOUND_APPROVED_BY"
+    )
+    live_outbound_approved_at: datetime | None = Field(
+        default=None, validation_alias="HERMECIOUS_LIVE_OUTBOUND_APPROVED_AT"
+    )
+    # The deployed commit, recorded on every readiness assessment.
+    build_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{7,40}$", validation_alias="HERMECIOUS_BUILD_SHA")
     # P5.1 (ADR-026): WhatsApp Cloud API binding. See app/whatsapp/config.py for the per-mode rules.
     whatsapp_mode: Literal["simulation", "contract_test", "provider_test", "production"] = Field(
         default="simulation", validation_alias="HERMECIOUS_WHATSAPP_MODE"
@@ -105,6 +115,9 @@ class Settings(BaseSettings):
         "whatsapp_test_identity_confirmed_by",
         "whatsapp_test_identity_confirmed_at",
         "whatsapp_test_recipients",
+        "live_outbound_approved_by",
+        "live_outbound_approved_at",
+        "build_sha",
         mode="before",
     )
     @classmethod
@@ -158,7 +171,15 @@ class Settings(BaseSettings):
                 parse_keyring(self.inbound_content_secrets.get_secret_value())
             except KeyringError:
                 raise ValueError("HERMECIOUS_INBOUND_CONTENT_SECRETS") from None
-        if self.live_outbound_enabled:  # cannot be enabled before the P5.5 go/no-go (Batch 08 §0.1.2)
+        if self.live_outbound_enabled and (  # never in test, development or CI (ADR-030)
+            self.environment != "production"
+            or self.whatsapp_mode != "production"
+            or not self.build_sha
+            or not self.live_outbound_approved_by
+            or self.live_outbound_approved_at is None
+            or self.live_outbound_approved_at.tzinfo is None
+            or self.live_outbound_approved_at > datetime.now(UTC)
+        ):
             raise ValueError("HERMECIOUS_LIVE_OUTBOUND_ENABLED")
         from app.whatsapp.config import whatsapp_setting_error  # noqa: PLC0415
 

@@ -21,7 +21,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from app.core.settings import Settings
 from app.egress.https_client import (
@@ -206,13 +206,21 @@ class MetaCloudTransport:
         http: GraphHttp,
         token: Callable[[], str],
         now: Callable[[], datetime],
+        *,
+        can_send: bool = True,
     ) -> None:
         if connection.graph_version not in SUPPORTED_GRAPH_VERSIONS:
             raise ProviderCallError("validation", "unsupported Graph API version")
         self.connection = connection
+        self.can_send = can_send  # False for the P5.5 read-only production catalog client
         self._http = http
         self._token = token
         self._now = now
+
+    @property
+    def real_network(self) -> bool:
+        """True only for the pinned Graph client; False for an injected local fake."""
+        return isinstance(self._http, PinnedHttpsClient)
 
     @property
     def messages_url(self) -> str:
@@ -266,6 +274,8 @@ class MetaCloudTransport:
     def send_template(
         self, intent: SendIntent, recipient: ResolvedRecipient, template: TemplateDescriptor
     ) -> SendResult:
+        if not self.can_send:
+            raise ProviderCallError("policy_denied", "this client is read-only")
         payload = self.build_payload(intent, recipient, template)
         now = self._now()
         try:
@@ -347,25 +357,35 @@ def build_transport(
     connection: ProviderConnectionView,
     now: Callable[[], datetime],
     http: GraphHttp | None = None,
+    *,
+    purpose: Literal["test", "production_read", "production_send"] = "test",
 ) -> MetaCloudTransport:
     """The only constructor. It can never raise a mode's capability:
     - simulation: no provider client at all (the P4.5 fake is the only transport);
-    - production: no outbound transport until the P5.5 go/no-go;
-    - contract_test: an injected local fake only, in the test environment;
-    - provider_test: the pinned Graph client, bound to the configured *test* WABA/phone.
+    - contract_test: an injected local fake only, in the test environment (P5.3 test sends);
+    - provider_test: the pinned Graph client, bound to the configured *test* WABA/phone (P5.3 test sends);
+    - production: a read-only catalog client (P5.5), or a sending client only when the deploy-time live gate is
+      open (production environment + `HERMECIOUS_LIVE_OUTBOUND_ENABLED`, which startup permits only there).
     """
     mode = settings.whatsapp_mode
-    if mode == "simulation" or settings.live_outbound_enabled:
+    if mode == "simulation":
         raise LiveTransportForbidden("simulation mode has no provider client")
     if mode == "production":
-        raise LiveTransportForbidden("production outbound is disabled until the P5.5 go/no-go")
+        if purpose == "test":
+            raise LiveTransportForbidden("test sends never use a production connection")
+        if purpose == "production_send" and not (
+            settings.live_outbound_enabled and settings.environment == "production"
+        ):
+            raise LiveTransportForbidden("production outbound is disabled until the separate operator go-live")
+    elif purpose != "test" or settings.live_outbound_enabled:
+        raise LiveTransportForbidden("test connections never carry production traffic")
     if connection.mode != mode:
         raise ProviderCallError("authz", "the connection was bound for another mode")
     if mode == "contract_test":
         if settings.environment != "test" or http is None:
             raise LiveTransportForbidden("contract tests use an injected local fake only")
         return MetaCloudTransport(connection, http, lambda: "contract-test-token", now)
-    # provider_test: credentials and IDs come from settings and must equal the bound connection exactly.
+    # provider_test and production: credentials and IDs come from settings and must equal the bound connection.
     if (connection.waba_id, connection.phone_number_id) != (
         settings.whatsapp_waba_id,
         settings.whatsapp_phone_number_id,
@@ -377,4 +397,4 @@ def build_transport(
     if token is None:  # pragma: no cover  # settings validation requires it in provider_test
         raise LiveTransportForbidden("no access token configured")
     client = http if http is not None else PinnedHttpsClient(egress_policy(connection))
-    return MetaCloudTransport(connection, client, token.get_secret_value, now)
+    return MetaCloudTransport(connection, client, token.get_secret_value, now, can_send=purpose != "production_read")

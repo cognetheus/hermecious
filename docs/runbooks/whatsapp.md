@@ -77,3 +77,25 @@ Nothing to configure. `HERMECIOUS_WHATSAPP_MODE=simulation` refuses every Meta I
 2. **Read:** owners and operators open **Inbox**. **Mark reviewed** is local only and sends nothing.
 3. **Repair the projection** if needed: `POST /api/v1/inbox/whatsapp/rebuild` (owner). It is safe to repeat and changes nothing if the threads are already correct.
 4. **Stop storing text:** unset the key and restart. Text already sealed stays until it expires; it becomes unreadable once the key is gone.
+
+## 4. Production go/no-go and the pilot (P5.5, ADR-030)
+
+**An agent never performs these steps.**
+
+1. **Review:** open **Production readiness** as the owner and press **Evaluate readiness now**. Resolve each non-VERIFIED row with its listed owner. Record only real human decisions as attestations, each with an evidence reference.
+2. **Catalog:** sync the production catalog (`POST /api/v1/release/whatsapp/catalog/sync`). This is read-only.
+3. **Content approval:** P4.4 cannot yet approve production content (ADR-030 §6). This is an owner decision before any pilot.
+4. **Deploy-time live gate:** this is a deployment change that the application cannot make. Set:
+   - `HERMECIOUS_ENV=production` and `HERMECIOUS_WHATSAPP_MODE=production`;
+   - `HERMECIOUS_BUILD_SHA=<commit>`;
+   - `HERMECIOUS_LIVE_OUTBOUND_APPROVED_BY=<name>` and `HERMECIOUS_LIVE_OUTBOUND_APPROVED_AT=<ISO time>`;
+   - `HERMECIOUS_LIVE_OUTBOUND_ENABLED=true`.
+
+   Startup refuses any other combination.
+5. **Authorize:** evaluate again, then authorize a pilot. Start with 1 message a day and type the acknowledgement exactly.
+6. **Send one message:** preview it, check the template, parameters and contact, then confirm with the contact's number. It must match the approved, opted-in contact.
+7. **Read the result:**
+   - `provider_accepted` means accepted by Meta only; delivery shows when a signed webhook arrives;
+   - `indeterminate` means investigate in the Meta dashboard before any new preview. Nothing is retried.
+
+**Stop:** pause (human takeover or quality alert) or revoke the pilot, set `HERMECIOUS_OUTREACH_KILL_SWITCH=true`, or set the live flag to `false` and restart. Messages Meta already accepted cannot be recalled.

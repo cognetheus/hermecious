@@ -2630,6 +2630,112 @@ All synthetic: events are signed locally and test sends use the in-process fake 
 | `bash scripts/check.sh` (1st) | 1 | Docker Hub `EOF` while pulling the base image for the integration build (transient); every other step passed |
 | `bash scripts/check.sh` (2nd) | 1 | Only `ruff check` and `ruff format` failed, on the new migration `0023` (line length); everything else passed (unit + contract 434, integration 436, e2e 34 + 12) |
 | `bash scripts/check.sh` (3rd) | 0 | All passed: unit + contract 434, web 2, integration **436**, e2e **34 + 12** (including `inbox.spec.ts` and `@after-restart`) |
-| Dev: `alembic upgrade head` (`0022 -> 0023`) | see below | |
+| Dev: `alembic upgrade head` (`0022 -> 0023`) | 0 | `0023 (head)` after the second attempt (the first ran before Postgres was up); api, worker and web healthy |
 
 **P5.5 readiness:** YES (engineering). **Production outreach-readiness:** NO.
+
+## P5.5 — Production go/no-go and the operator-only pilot gate (2026-11-02)
+
+**Scope:** `docs/phases/OPUS_P5.5_PROMPT.md`, blueprint §4 P5.5. **Base:** `be44d3e` (P5.4). **Migration:** `0024_release_gate` (additive). **No real WhatsApp message was sent. No live flag was changed. No Meta account was touched.**
+
+### Prerequisite matrix (inventory)
+
+| Prerequisite | Status | Evidence / owner |
+|---|---|---|
+| P4.3 consent and suppression evaluator | VERIFIED (code) | `eligibility.decide`, reused as the per-send authority |
+| P4.4 exact-revision approval | **FAILED for production** | P4.4 refuses non-fixture campaigns (`production_approval_unavailable`, `simulation_only` check). Owner decision (ADR-030 §6) |
+| P4.5 dry run | VERIFIED (code) | unchanged; zero egress |
+| P5.1 transport | VERIFIED; extended | `purpose` = `test` \| `production_read` \| `production_send`; a read-only client cannot send |
+| P5.2 signed callbacks | VERIFIED (synthetic) | live callbacks not observed: BLOCKED_EXTERNAL |
+| P5.3 WATEST-10 real receipt | **BLOCKED_EXTERNAL** | owner: Meta test assets and their own confirmation |
+| P5.4 operator inbox | VERIFIED (synthetic) | `be44d3e` |
+| P3.4 real 30-school audit | **UNKNOWN / not present** | operator; synthetic samples never count (tested) |
+| Meta production credentials, business verification, permissions | BLOCKED_EXTERNAL | owner; not observable from the system |
+| Meta policy re-check; Pakistan-local legal review | BLOCKED_EXTERNAL | owner; a human decision, recorded only as an attestation |
+
+### Conflicts and safe defaults
+
+1. **Live flag (security-critical).** Batch 07/08 made `HERMECIOUS_LIVE_OUTBOUND_ENABLED=true` always refuse to start "until P5.5". P5.5 requires a separate deploy-time enablement. The safe default:
+   - it starts only with `HERMECIOUS_ENV=production`, WhatsApp production mode, `HERMECIOUS_BUILD_SHA`, and a named `HERMECIOUS_LIVE_OUTBOUND_APPROVED_BY`/`_AT`;
+   - test, development and CI always refuse it;
+   - it is necessary, never sufficient.
+
+   **The owner must accept ADR-030.**
+2. **No server-side number.** P4.3 stores numbers only as keyed digests. The safe default: the owner types the number at confirmation, it must hash to the approved contact's digest, and it is never stored or logged. The alternative (sealed numbers) is an owner decision.
+3. **P4.4 production approval gap.** P4.4 is unchanged, and production fails closed. The pilot mechanics are tested through one documented test seam (`production_approval` fixture) that drops only `production_approval_unavailable`. `test_release_03_…` proves the unpatched gate keeps readiness `approved_content: BLOCKED_EXTERNAL` and refuses previews.
+4. **Human takeover / quality alert.** There is no conversation state machine yet (P6.3). They are represented as owner **pauses** of the pilot authorization (`human_takeover`, `quality_alert`), which block unsent work immediately.
+5. **Missing Batch 09 document:** as noted under P5.4.
+
+### Design (ADR-030 Proposed; contract and runbook §4)
+
+- **`readiness_assessments`:** append-only trigger; 24 h; bound to a digest over stable evidence only.
+  - Statuses: `no_go` / `blocked_external` / `ready_for_operator_review`.
+  - It always reports `grants_sending: false`.
+  - Identity is stored only as fingerprints.
+- **`readiness_attestations`:** append-only, 90 days, statement plus an evidence reference (a bare boolean is a 422).
+- **`pilot_authorizations`:** owner act with the exact typed acknowledgement; needs a fresh ready assessment whose digest still matches; at most 3 a day; at most 14 days (DB checks); one live per connection; pause/resume/revoke.
+- **`pilot_sends`:** preview (owner/operator; recipient, purpose and template only from the P4.4 approval of the exact revision; forged fields 422), then confirm (owner, CSRF, nonce, number). Confirm re-checks the live gate, authorization, cap, readiness digest, P4.4 approval, P4.3 `decide()` and Meta's live template; then reserves, re-reads the stop, makes one call, and records accepted, rejected or indeterminate. There is no retry. A stale reservation can be marked indeterminate by an owner only.
+- **Read-only production catalog sync** (owner).
+- **P4.3 `decide()`** now understands `meta:<template id>`: a synced catalog row counts as verified only while fresh (24 h).
+- **UI `/release/whatsapp`:**
+  - persistent banner `PRODUCTION OUTBOUND DISABLED UNTIL SEPARATE OPERATOR GO-LIVE`;
+  - checklist with evidence and owners, and live-gate state;
+  - owner evaluate, attestation and authorize controls, and pause/resume/revoke;
+  - rollback steps and the escalation path (Inbox, human replies).
+
+  **There is no send, bulk or campaign control.**
+
+### Acceptance evidence
+
+Fake transports only; Meta hosts are blocked (`no_egress`: 0 attempts). The positive-path tests use the documented `production_approval` seam for the P4.4 gap.
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| RELEASE-01 | `test_release_01_02_04_…` | Nothing configured: `no_go`. `provider_identity`, `real_test_receipt`, `webhook_health`, catalog, opt-in, approval, Meta verification and legal review are all BLOCKED_EXTERNAL; build UNKNOWN; `grants_sending: false`; banner shown. A Meta test phone presented as production → `provider_identity: FAILED`. Kill switch → FAILED | VERIFIED |
+| RELEASE-02 | same; `test_release_02_…` | No real P3.4 audit → `school_evidence_audit: FAILED`; 30 synthetic schools never pass. A later FAILED audit → the pilot confirm is denied `readiness_invalidated` (0 POSTs) and a new live campaign is approval-blocked | VERIFIED |
+| RELEASE-03 | `test_release_03_template_…`; `test_release_03_this_drafts_approval_…` | Meta pauses the template, or changes its content → `template_changed`. The draft is edited → `readiness_invalidated`; with readiness unchanged (a newer approval elsewhere) → `approval_stale`. 0 POSTs. **Unpatched P4.4:** readiness `approved_content: BLOCKED_EXTERNAL` and the preview is refused (production stays closed) | VERIFIED (mechanics); production approval = interface gap |
+| RELEASE-04 | `test_release_04_consent_…`; `test_release_04_opt_out_…`; RELEASE-01 | Consent revoked between preview and confirm → denied (the approval goes stale; readiness catches it first), and a new preview is refused. Inbound STOP from the contact → suppressed: preview refused (`eligibility_suppressed`). An earlier accepted send keeps its `delivered` history. Legal review missing → BLOCKED_EXTERNAL | VERIFIED |
+| RELEASE-05 | `test_release_05_…` | The assessment JSON contains no token, secret, raw phone/WABA ID or number (fingerprints only). UPDATE/DELETE on assessments and attestations raise (append-only). Another tenant's assessment id → 404. Observer → 403. An attestation without evidence (with `is_verified: true`) → 422. A wrong acknowledgement → 422. +25 h → expired (409) | VERIFIED |
+| RELEASE-06 | `test_release_06_…`; `tests/unit/test_release_gate.py` | Ready assessment with no pilot → preview refused. Pilot without the live gate → `live_outbound_disabled`. Live flag outside production → `not_production_environment`. 0 POSTs. Settings: the live flag refuses to start in test, development, production-without-approval, an unidentified build, a future approval, provider_test mode, and fully-approved-but-test or development environments; only an approved production deployment opens the gate | VERIFIED |
+| RELEASE-07 | `test_release_07_owner_…`; `…_caps_hours_…`; `…_quiet_hours_…` | Operator preview, owner confirm. Operator confirm → 403. A different number → 409, not consumed. Exactly 1 POST to `…/{phone}/messages` with the approved contact's digits and the template. Replay → `replayed`. Forged `phone_number`/`template_status`/`skip_consent`/`campaign_send`/`account_id` → 422. No CSRF → 403. Wrong nonce → 409. Cap 1/day → `daily_cap_reached`. 23:00 PKT → `eligibility_defer` | VERIFIED |
+| RELEASE-08 | `test_release_08_…` (6 tests) | Two concurrent confirms → 1 POST. Timeout → `indeterminate`; 429 → `provider_quota`; 401 → `provider_auth`; 5xx → `provider_transient`. No wamid invented; replay with no resend. Kill switch flipped during the template re-check → `stopped_before_send`, 0 POSTs. A crashed reservation can be marked indeterminate only after 2 min | VERIFIED |
+| RELEASE-09 | `test_release_09_…` | Human-takeover pause → `pilot_human_takeover`. Resume → send. Quality-alert pause → `pilot_quality_alert`, and previews refused while paused. Revoke is final (resume 409). Past accepted send preserved | VERIFIED |
+| RELEASE-10 | `test_release_10_…` (integration + unit); `e2e/release.spec.ts` | Every automated pilot row has `simulated_transport=true`; 0 egress attempts; no send/pilot/dispatch job type; no bulk/send routes; exactly 1 `release.pilot_confirmed` audit. Committed config keeps the flag false. E2E: owner sees NO GO, the banner, P3.4 FAILED and legal BLOCKED_EXTERNAL; no authorize form, no send/bulk/campaign button; pilot preview 409; forged `phone_number` 422; observer refused; Meta hosts blocked | VERIFIED |
+
+### Mutation checks (originals restored)
+
+13 of 13 were caught after two test additions:
+- live gate ignored (06);
+- readiness not re-checked (02);
+- no daily cap (07);
+- pause ignored (09);
+- **approval not re-checked**: first survived; caught after adding `test_release_03_this_drafts_approval_…`;
+- no stop after reservation (08);
+- no live template check (03);
+- number not verified (07);
+- UNKNOWN not `no_go` (unit);
+- **live flag in any environment**: first survived; caught after adding the fully-approved-but-test/development cases;
+- send without the live gate (WAAD-03);
+- stale assessment authorizes (05);
+- cross-tenant assessment (05).
+
+### Verdict
+
+- **Engineering:** VERIFIED (RELEASE-01..10 on fakes).
+- **Production go/no-go:** **NO_GO / BLOCKED_EXTERNAL.** Missing:
+  - Meta production credentials and verification;
+  - WATEST-10;
+  - a real P3.4 audit;
+  - real opt-ins;
+  - legal review;
+  - a P4.4 production-approval decision.
+- **PRODUCTION OUTREACH READY: NO.** No messages were sent by this run.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/test-integration.sh tests/integration/test_migrations.py` | 0 | 9 passed (round-trip to `0024`; models match migrations) |
+| `bash scripts/test-integration.sh tests/integration/test_release.py` (iterations) | 1 → 0 | Fixed test-setup errors: same-instant audits, revoke returns 201, cap ordering, kill switch left on, preview after pause. Behaviour changes: none |
+| `bash scripts/check.sh` | 0 | Unit + contract **445**, web 2, integration **455**, e2e **36 + 12** (including `release.spec.ts`) |
+| Dev: `alembic upgrade head` (`0023 -> 0024`) | see the P6.1 entry | |
