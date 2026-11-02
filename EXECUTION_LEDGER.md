@@ -2810,7 +2810,7 @@ Fake transports only; Meta hosts are blocked (`no_egress`: 0 attempts). The posi
 | `bash scripts/test-e2e.sh` (2nd) | 1 | 3 unrelated specs timed out (single tests ran 8–10 min) while other projects' containers loaded the machine (load average ≈ 8); these specs passed in the run before |
 | `bash scripts/test-e2e.sh` (3rd) | 0 | 36 + 12 passed in 33 s |
 | `bash scripts/check.sh` | 0 | Unit + contract **470**, web 2, integration **460**, e2e **36 + 12** |
-| Dev: `alembic upgrade head` (`0024 -> 0025`) | 0 | (below) |
+| Dev: `alembic upgrade head` (`0024 -> 0025`) | 0 | `0025 (head)`; api, worker and web healthy |
 
 **P6.1 status:** engineering VERIFIED (INTENT-01..06, 09, 10). INTENT-07 is **BLOCKED (human review pending)**. INTENT-08 is **BLOCKED_QUALITY**: on independent data, macro-F1 is 0.736 against the 0.85 target and safety recall is 13/19. The intent feature remains manual-review only.
 
