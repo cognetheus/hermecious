@@ -3,8 +3,47 @@ import { notFound } from "next/navigation";
 
 import { karachiTime } from "../../../../lib/accounts";
 import { apiGet } from "../../../../lib/api";
-import { CONTENT_LABEL, deliveryText, READ_ONLY_LABEL, type Timeline } from "../../../../lib/inbox";
-import { AutoRefresh, MarkReviewed } from "../actions";
+import { CONTENT_LABEL, deliveryText, type Intent, READ_ONLY_LABEL, type Timeline, words } from "../../../../lib/inbox";
+import { AutoRefresh, IntentReview, MarkReviewed } from "../actions";
+
+function IntentNote({ messageId, intent }: { messageId: string; intent: Intent }) {
+  return (
+    <section aria-label="Intent for review" style={{ borderLeft: "3px solid currentColor", paddingLeft: "0.5rem" }}>
+      <p>
+        Intent (for review): <strong>{words(intent.primary_intent)}</strong>
+        {intent.secondary_intents.length > 0 ? ` · also ${intent.secondary_intents.map(words).join(", ")}` : ""} · confidence{" "}
+        {intent.confidence} · {words(intent.language)} · suggested next step: {words(intent.recommended_action)} (nothing happens
+        automatically)
+      </p>
+      {intent.safety_flags.length > 0 ? <p role="alert">Flags: {intent.safety_flags.map(words).join(", ")}</p> : null}
+      {intent.evidence.length > 0 ? (
+        <p>
+          Because of:{" "}
+          {intent.evidence.map((e) => (
+            <q key={`${e.start}-${e.reason}`} dir="auto">
+              {e.text}
+            </q>
+          ))}
+        </p>
+      ) : null}
+      <p>
+        <small>
+          {intent.notice} Classifier {intent.classifier_version}
+          {intent.model_version ? ` · model ${intent.model_version}` : " · rules only, no model"}
+        </small>
+      </p>
+      {intent.review ? (
+        <p>
+          Reviewed: {intent.review.decision}
+          {intent.review.corrected_primary ? ` as ${words(intent.review.corrected_primary)}` : ""}
+          {intent.review.note ? ` · ${intent.review.note}` : ""}
+        </p>
+      ) : (
+        <IntentReview messageId={messageId} observationId={intent.observation_id} />
+      )}
+    </section>
+  );
+}
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +109,7 @@ export default async function Conversation({
                   <em>{CONTENT_LABEL[e.content]}</em>
                 </p>
               )}
+              {e.intent ? <IntentNote messageId={e.id} intent={e.intent} /> : null}
             </li>
           ) : (
             <li key={e.id} aria-label="TEST outbound message">

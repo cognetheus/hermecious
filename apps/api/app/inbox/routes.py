@@ -6,7 +6,7 @@ contact or record consent.
 """
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -16,6 +16,7 @@ from app.api.dependencies import AppClock, AppSettings
 from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
 from app.auth.models import Role
 from app.inbox import service
+from app.intent import service as intent
 from app.persistence.db import DbSession
 from app.whatsapp import content
 
@@ -70,4 +71,36 @@ def review(thread_id: uuid.UUID, body: ReviewBody, actor: CurrentActor, db: DbSe
 def rebuild(actor: CurrentActor, db: DbSession, clock: AppClock, settings: AppSettings) -> JSONResponse:
     """Owner only. Recomputes threads from the signed source tables in the worker; reads only."""
     job_id = service.request_rebuild(db, actor=actor, clock=clock, environment=settings.environment)
+    return JSONResponse({"job_id": str(job_id)}, status_code=202, headers=PRIVATE)
+
+
+class IntentReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    observation_id: uuid.UUID
+    decision: Literal["confirmed", "corrected"]
+    corrected_primary: Literal[
+        "interested", "needs_details", "objection", "request_demo", "defer", "not_interested", "opt_out",
+        "human_request", "ambiguous", "abusive",
+    ] | None = None  # fmt: skip
+    note: Annotated[str, Field(max_length=500)] = ""
+
+
+@router.post("/messages/{message_id}/intent-review", status_code=201)
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def intent_review(
+    message_id: uuid.UUID, body: IntentReviewBody, actor: CurrentActor, db: DbSession, clock: AppClock
+) -> JSONResponse:
+    """P6.1: the operator's own judgement of an intent observation. Stored apart and audited; changes nothing else."""
+    row = intent.review(
+        db, actor=actor, clock=clock, message_id=message_id, observation_id=body.observation_id,
+        decision=body.decision, corrected_primary=body.corrected_primary, note=body.note,
+    )  # fmt: skip
+    payload = {"id": str(row.id), "decision": row.decision, "corrected_primary": row.corrected_primary}
+    return JSONResponse(payload, status_code=201, headers=PRIVATE)
+
+
+@router.post("/intent/backfill", status_code=202)
+def intent_backfill(actor: CurrentActor, db: DbSession, clock: AppClock, settings: AppSettings) -> JSONResponse:
+    """Owner only: classify signed inbound messages that lack an observation for the current classifier version."""
+    job_id = intent.request_backfill(db, actor=actor, clock=clock, environment=settings.environment)
     return JSONResponse({"job_id": str(job_id)}, status_code=202, headers=PRIVATE)

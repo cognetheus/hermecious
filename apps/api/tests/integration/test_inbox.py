@@ -451,8 +451,9 @@ def test_inbox_10_no_reply_send_or_enrollment_surface_exists(app: FastAPI, clien
     paths = {(m, str(c.path)) for c in iter_route_contexts(app.routes) for m in (c.methods or ())}
     inbox_routes = sorted(p for p in paths if p[1].startswith(API))
     assert inbox_routes == [
-        ("GET", f"{API}/threads"), ("GET", f"{API}/threads/{{thread_id}}"), ("POST", f"{API}/rebuild"),
-        ("POST", f"{API}/threads/{{thread_id}}/review"),
+        ("GET", f"{API}/threads"), ("GET", f"{API}/threads/{{thread_id}}"), ("POST", f"{API}/intent/backfill"),
+        ("POST", f"{API}/messages/{{message_id}}/intent-review"), ("POST", f"{API}/rebuild"),
+        ("POST", f"{API}/threads/{{thread_id}}/review"),  # P6.1 adds two local, non-sending routes
     ]  # fmt: skip
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "reply", "dispatch"))]
     assert PHONE  # the bound test phone; the inbox has no route that takes a number

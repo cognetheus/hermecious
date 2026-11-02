@@ -30,11 +30,13 @@ from app.auth.models import Role
 from app.auth.service import Actor
 from app.contacts import addresses
 from app.contacts import service as contacts
+from app.contacts.addresses import Keyring
 from app.contacts.models import Contact, SuppressionEntry
 from app.core.clock import FixedClock
 from app.core.errors import DependencyUnavailable
 from app.core.settings import Settings
 from app.inbox import service as inbox
+from app.intent import service as intent
 from app.jobs import registry as job_registry
 from app.jobs import service as job_service
 from app.whatsapp import content, webhook
@@ -207,7 +209,9 @@ def _status(db: Session, item: ProviderEventItem, now: datetime) -> None:
         row.conflict, row.conflict_reason = True, conflict
 
 
-def _inbound(db: Session, item: ProviderEventItem, connection: ProviderConnection, now: datetime) -> None:
+def _inbound(
+    db: Session, item: ProviderEventItem, connection: ProviderConnection, now: datetime, keys: Keyring | None = None
+) -> None:
     n = item.normalized_json
     assert item.provider_message_id is not None and item.provider_timestamp is not None  # noqa: S101
     org = item.organization_id
@@ -240,6 +244,7 @@ def _inbound(db: Session, item: ProviderEventItem, connection: ProviderConnectio
         inbound_seq=item.arrival_seq,
         now=now,
     )  # the P5.4 thread, in the same transaction as the message
+    intent.record_safely(db, created, item, keys, now)  # P6.1: an observation for review; a fault never loses it
     if contact is not None:  # verified service-window provenance only: max(prior, this), never marketing consent
         db.execute(
             insert(ProviderServiceWindow)
@@ -289,6 +294,7 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
         raise job_registry.PermanentJobError("connection_not_found")
     if inbox.purge_expired(db, org, connection_id, ctx.now):  # bounded retention of sealed text (ADR-029)
         db.commit()
+    keys = content.keyring(settings)
     done = failed = 0
     while done + failed < BATCH:
         job_registry.keep_alive(ctx)
@@ -310,7 +316,7 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
             if item.item_type == "delivery_status":
                 _status(db, item, ctx.now)
             elif item.item_type == "incoming_message":
-                _inbound(db, item, connection, ctx.now)
+                _inbound(db, item, connection, ctx.now, keys)
             item.processing_status, item.processed_at, item.attempts = "processed", ctx.now, item.attempts + 1
             db.commit()  # the domain change and the processed marker, together
             done += 1

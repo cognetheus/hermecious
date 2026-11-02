@@ -261,19 +261,26 @@ def _thread(db: Session, org: uuid.UUID, thread_id: uuid.UUID, *, lock: bool = F
     return row
 
 
+def message_text(
+    m: ProviderInboundMessage, item: ProviderEventItem, keys: Keyring | None, now: datetime
+) -> tuple[str | None, str]:
+    """(text, state): `available`, `not_text`, `expired`, `not_retained` or `unreadable` (ADR-029)."""
+    if m.kind != "text":
+        return None, "not_text"
+    if m.provider_timestamp < now - content.RETENTION:
+        return None, "expired"
+    sealed = item.normalized_json.get("sealed_text")
+    if sealed is None:
+        return None, "not_retained"
+    text = content.unseal(keys, content.aad(str(m.provider_connection_id), m.provider_message_id), sealed)
+    return (text, "available") if text is not None else (None, "unreadable")
+
+
 def _inbound_entry(
     m: ProviderInboundMessage, item: ProviderEventItem, keys: Keyring | None, now: datetime
 ) -> dict[str, Any]:
     sealed = item.normalized_json.get("sealed_text")
-    text, state = None, "not_text"
-    if m.kind == "text":
-        if m.provider_timestamp < now - content.RETENTION:
-            state = "expired"
-        elif sealed is None:
-            state = "not_retained"
-        else:
-            text = content.unseal(keys, content.aad(str(m.provider_connection_id), m.provider_message_id), sealed)
-            state = "available" if text is not None else "unreadable"
+    text, state = message_text(m, item, keys, now)
     return {
         "type": "inbound", "id": str(m.id), "at": m.provider_timestamp.isoformat(), "seq": item.arrival_seq,
         "kind": m.kind, "text": text, "content": state,
@@ -357,6 +364,12 @@ def timeline(
         _inbound_entry(src[0], src[1], keys, now) if isinstance(src, tuple) else _outbound_entry(db, src)
         for _at, _id, src in reversed(page)
     ]
+    from app.intent import service as intent  # noqa: PLC0415  # intent depends on this module
+
+    intents = intent.views(db, org, [src[0].id for _at, _id, src in page if isinstance(src, tuple)])
+    for entry in entries:
+        if entry["type"] == "inbound":
+            entry["intent"] = intents.get(uuid.UUID(entry["id"]))
     oldest = page[-1] if page else None
     party = _parties(db, org, [thread])[thread.id]
     unread = int(db.scalar(select(_unread()).select_from(InboxThread).where(InboxThread.id == thread.id)) or 0)

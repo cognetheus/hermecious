@@ -213,6 +213,21 @@ class InboxRebuildPayload(_Payload):
     connection_id: uuid.UUID
 
 
+def _intent_classify(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.core.settings import load_settings  # noqa: PLC0415
+    from app.intent.service import backfill  # noqa: PLC0415  # avoids an import cycle
+    from app.whatsapp.content import keyring  # noqa: PLC0415
+
+    return backfill(db, ctx.organization_id, payload.connection_id, keyring(load_settings()), ctx.now, ctx)
+
+
+class IntentClassifyPayload(_Payload):
+    """`intent.classify` v1 (P6.1): classify signed inbound messages lacking an observation for the current
+    classifier version. Labels for human review only; never sends, suppresses or grants."""
+
+    connection_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -254,6 +269,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         1,
         InboxRebuildPayload,
         _inbox_rebuild,
+        max_attempts=3,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("intent.classify", 1): JobSpec(
+        "intent.classify",
+        1,
+        IntentClassifyPayload,
+        _intent_classify,
         max_attempts=3,
         environments=frozenset({"development", "test", "production"}),
     ),

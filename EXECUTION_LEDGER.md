@@ -2738,4 +2738,80 @@ Fake transports only; Meta hosts are blocked (`no_egress`: 0 attempts). The posi
 | `bash scripts/test-integration.sh tests/integration/test_migrations.py` | 0 | 9 passed (round-trip to `0024`; models match migrations) |
 | `bash scripts/test-integration.sh tests/integration/test_release.py` (iterations) | 1 → 0 | Fixed test-setup errors: same-instant audits, revoke returns 201, cap ordering, kill switch left on, preview after pause. Behaviour changes: none |
 | `bash scripts/check.sh` | 0 | Unit + contract **445**, web 2, integration **455**, e2e **36 + 12** (including `release.spec.ts`) |
-| Dev: `alembic upgrade head` (`0023 -> 0024`) | see the P6.1 entry | |
+| Dev: `alembic upgrade head` (`0023 -> 0024`) | 0 | `0024 (head)`; api, worker and web healthy |
+
+## P6.1 — Sales conversation intent taxonomy and evaluation (2026-11-02)
+
+**Scope:** `docs/phases/OPUS_P6.1_PROMPT.md`, blueprint §4 P6.1. **Base:** `9c45551` (P5.5). **Migration:** `0025_intent_observations` (additive, append-only). **P5.5 state:** NO_GO, so this is offline only: no automation and no outbound capability.
+
+### Inventory and decisions
+
+- **No model gateway exists.** Drafts and research extraction are explicitly "no models". Classification is **rules-only** (`intent-rules-1.0`, `model_version: null`). No model credentials were invented.
+- **Source:** signed P5.2 `provider_inbound_messages` only. Text is unsealed with the P5.4 keyring (ADR-029).
+- **Where it runs:** inside the existing P5.2 processor transaction, in a savepoint (a fault never loses the signed message), plus the owner-triggered `intent.classify` backfill job.
+- **Authority:** the P5.2 STOP path and P4.3 stay the only suppression authority. The classifier never suppresses or grants.
+- **Annotation guidelines:** `docs/intent/annotation-guidelines.md` (precedence, negation, quotation, short messages, confusables, code-switching, sensitive data).
+
+### Datasets and measured quality (be exact)
+
+| Set | Items | Provenance | Use | Result |
+|---|---|---|---|---|
+| `gold_v1` | 121 (EN 43, RU 37, UR 31, mixed 8, unknown 2); 80 dev / 41 held-out by cluster | written by this agent, which also wrote the rules | regression | held-out macro-F1 1.0, safety recall 100%. **Not a generalization measure (leakage)** |
+| `blind_v1` | 72 | independent agent, guidelines only | measured once, then consumed for rule development | macro-F1 **0.6907**, 11 safety misses, 0 false opt-outs |
+| `blind_v2` | 80 (EN 24, RU 24, UR 24, mixed 8) | second independent agent, guidelines only | **held-out measurement** | macro-F1 **0.7364**, accuracy 0.725, safety recall **13/19** (opt-out 8/9, human request 5/10), **0 false opt-outs** |
+
+- **Targets:** held-out macro-F1 ≥ 0.85 and 100% clear-safety recall. **Not met on independent data → INTENT-08 BLOCKED_QUALITY.**
+- **Human review:** none of the fixtures is human-reviewed, so INTENT-07's "human-reviewed gold" is **BLOCKED (human review pending)**.
+- **Promotion is blocked;** the feature remains a manual-review aid. After the `blind_v2` measurement, two orthographic safety fixes were added (`krna`; "call kar lena" / "کال کر لیں"). They are **not** validated by it; a fresh blind set must re-measure.
+- **Per-language confusion matrices** are produced by `uv run python -m app.intent.evaluate <file>`; on `blind_v2` most errors are `ambiguous` predictions for indirect phrasing.
+
+### Acceptance evidence
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| INTENT-01 | `tests/unit/test_intent.py::test_intent_01_…` | Exactly 10 intents and 10 actions. Rejected: unknown label, invented action, wrong action for the label, a `purchase_probability` field, primary repeated as secondary, unanchored evidence, opt-out without its flag, unknown flag | VERIFIED |
+| INTENT-02 | `test_intent_02_03_…` (19 cases) | English, Roman Urdu, Urdu script, mixed script and unknown detected. Confusables (`ЅТОР`) and zero-width text folded. French → `unsupported_language`, ambiguous. Emoji → unknown. Evidence anchored to the original text | VERIFIED (behaviour); generalization see INTENT-08 |
+| INTENT-03 | unit (4 mixed opt-outs); `tests/integration/test_intent.py::test_intent_03_10_…` | "stop + demo", "stop + idiots", "no thanks + dobara mat karna", mixed script: all `opt_out` with `explicit_opt_out`. Principal request → `needs_details` + `human_escalation_requested`. Through the signed path: 3 observations; **suppressions 0 and permissions 0** (the classifier never suppresses or grants) | VERIFIED |
+| INTENT-04 | `test_intent_04_…` | Image → `ambiguous` with `content_not_text`. The wrong-WABA event is never stored, so never classified (1 observation total). Another org's review → 404; observer → 403. Test sends are never classified (source table) | VERIFIED |
+| INTENT-05 | unit fuzz (500 hostile strings) + unavailable content; `test_intent_05_…` | The classifier never raises; every output passes validation. A classifier fault inside the processor → message and thread intact, no observation; the owner backfill adds it later. The injection text → `ambiguous` + `injection_attempt_suspected` + `manual_triage`; no probability or score fields | VERIFIED |
+| INTENT-06 | `test_intent_06_…` | Redelivery and backfill ×2 → 1 observation. A new classifier version → appended (2 rows, original untouched). UPDATE → append-only error | VERIFIED |
+| INTENT-07 | `test_intent_07_…` | gold_v1: 121 items (≥25 each of EN, RU, UR, plus mixed), cluster-disjoint split; all three datasets hash-pinned in `manifest.json`. **Not human-reviewed** (`human_review: null`) | **BLOCKED (human review pending)** |
+| INTENT-08 | `test_intent_08_…` ×2; the `blind_v2` measurement | Own fixtures: held-out macro-F1 1.0, safety recall 100%. **Independent blind set: macro-F1 0.7364, safety recall 13/19.** 0 false `explicit_opt_out` on all 273 messages | **BLOCKED_QUALITY** (promotion blocked) |
+| INTENT-09 | `test_intent_09_…`; `e2e/inbox.spec.ts` | The timeline shows label, evidence ("pehle se"), version and `model_version: null`. Review without CSRF → 403; unknown label → 422; same label → 409; correction → 201, 1 review, 1 `intent.reviewed` audit; the observation is unchanged. E2E: 4 intent panels on the seeded messages, "rules only, no model", "nothing happens automatically"; a correction is recorded; no compose input | VERIFIED |
+| INTENT-10 | `test_intent_03_10_…`; INBOX-10 | 0 egress attempts; no send/reply job; suppressions and permissions unchanged; message text absent from logs; inbox POSTs remain local (WAAD-10 pins them) | VERIFIED |
+
+### Mutation checks (originals restored)
+
+10 of 10 were caught after one test addition:
+- negation ignored: survived at first, caught after adding the case below;
+- quotes ignored;
+- no confusable folding;
+- no injection flag;
+- no savepoint;
+- action not checked;
+- evidence not anchored;
+- review not org-scoped;
+- opt-out flag dropped;
+- backfill ignores version.
+
+**Bug found by N1:** `_quoted()` counted contraction apostrophes as quotation marks. "I'm asking you: stop messaging us" was therefore **not** flagged as an opt-out (a safety false negative). It is fixed (apostrophes inside words are ignored), and the case is pinned by a unit test. The gold and blind results are unchanged.
+
+### Incidental notes
+
+- **Test harness:** the job worker reads settings from the environment. The intent tests set the same content key for the worker, as a deployment does.
+- **Pinned surfaces:** WAAD-10 and INBOX-10 now pin the two local P6.1 routes (`/intent/backfill` and `/messages/{id}/intent-review`). Both are non-sending.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `uv run python -m app.intent.evaluate tests/fixtures/intent/blind_v2.jsonl` | 0 | Post-fix blind macro-F1 0.7625, `targets_met: false` (the one-time measurement before the fixes was 0.7364) |
+| `bash scripts/check.sh` (1st) | 1 | Only e2e failed: an `inbox.spec.ts` selector matched all 4 intent panels (every review dropdown contains "request demo"). Fixed by matching the panel heading |
+| `bash scripts/test-e2e.sh` (2nd) | 1 | 3 unrelated specs timed out (single tests ran 8–10 min) while other projects' containers loaded the machine (load average ≈ 8); these specs passed in the run before |
+| `bash scripts/test-e2e.sh` (3rd) | 0 | 36 + 12 passed in 33 s |
+| `bash scripts/check.sh` | 0 | Unit + contract **470**, web 2, integration **460**, e2e **36 + 12** |
+| Dev: `alembic upgrade head` (`0024 -> 0025`) | 0 | (below) |
+
+**P6.1 status:** engineering VERIFIED (INTENT-01..06, 09, 10). INTENT-07 is **BLOCKED (human review pending)**. INTENT-08 is **BLOCKED_QUALITY**: on independent data, macro-F1 is 0.736 against the 0.85 target and safety recall is 13/19. The intent feature remains manual-review only.
+
+**P6.2 readiness:** do not start until INTENT-07/08 are resolved or the owner explicitly accepts manual-review-only intent. **Production outreach-readiness:** NO.

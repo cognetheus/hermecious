@@ -22,6 +22,36 @@ export type Thread = {
   version: number;
 };
 
+export const INTENT_LABELS = [
+  "interested",
+  "needs_details",
+  "objection",
+  "request_demo",
+  "defer",
+  "not_interested",
+  "opt_out",
+  "human_request",
+  "ambiguous",
+  "abusive",
+] as const;
+
+export type Intent = {
+  observation_id: string;
+  primary_intent: (typeof INTENT_LABELS)[number];
+  secondary_intents: string[];
+  safety_flags: string[];
+  language: string;
+  confidence: string;
+  requires_human_review: boolean;
+  recommended_action: string;
+  evidence: { start: number; end: number; text: string; reason: string }[];
+  reason_codes: string[];
+  classifier_version: string;
+  model_version: string | null;
+  notice: string;
+  review: { decision: string; corrected_primary: string | null; note: string; reviewed_at: string } | null;
+};
+
 export type InboundEntry = {
   type: "inbound";
   id: string;
@@ -33,6 +63,7 @@ export type InboundEntry = {
   truncated: boolean;
   stop_signal: boolean;
   provenance: "verified_inbound";
+  intent?: Intent | null;
 };
 
 export type OutboundEntry = {
@@ -67,4 +98,8 @@ export function deliveryText(entry: OutboundEntry): string {
   if (entry.delivery === null) return entry.state.replaceAll("_", " ");
   if (entry.delivery.status === "accepted_unknown_delivery") return "accepted by Meta, delivery not confirmed by any webhook";
   return entry.delivery.conflict ? `${entry.delivery.status} (conflict: ${entry.delivery.conflict.replaceAll("_", " ")})` : entry.delivery.status;
+}
+
+export function words(code: string): string {
+  return code.replaceAll("_", " ");
 }

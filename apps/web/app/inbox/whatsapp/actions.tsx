@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
+import { INTENT_LABELS, words } from "../../../lib/inbox";
 import { errorMessage, postJson } from "../../../lib/mutate";
 
 /** Polling is enough for a read-only inbox (no realtime infrastructure). */
@@ -38,5 +39,54 @@ export function MarkReviewed({ threadId, throughSeq }: { threadId: string; throu
         {message}
       </span>
     </p>
+  );
+}
+
+/** P6.1: the operator's own judgement of an intent observation. Stored separately; it changes nothing else. */
+export function IntentReview({ messageId, observationId }: { messageId: string; observationId: string }) {
+  const router = useRouter();
+  const [message, setMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const corrected = String(form.get("label") ?? "");
+    setPending(true);
+    try {
+      const result = await postJson(`/api/v1/inbox/whatsapp/messages/${messageId}/intent-review`, {
+        observation_id: observationId,
+        decision: corrected ? "corrected" : "confirmed",
+        corrected_primary: corrected || null,
+        note: String(form.get("note") ?? ""),
+      });
+      setMessage(result.ok ? "Review recorded" : errorMessage(result.data));
+      if (result.ok) router.refresh();
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <form onSubmit={submit} aria-label="Review intent">
+      <label>
+        Correct label{" "}
+        <select name="label" defaultValue="">
+          <option value="">(the label is right)</option>
+          {INTENT_LABELS.map((l) => (
+            <option key={l} value={l}>
+              {words(l)}
+            </option>
+          ))}
+        </select>
+      </label>{" "}
+      <label>
+        Note <input name="note" maxLength={500} size={30} />
+      </label>{" "}
+      <button type="submit" disabled={pending}>
+        Record review
+      </button>{" "}
+      <span role="status" aria-live="polite">
+        {message}
+      </span>
+    </form>
   );
 }

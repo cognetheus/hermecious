@@ -1,0 +1,42 @@
+{
+  "classifier_version": "intent-rules-1.0",
+  "datasets": {
+    "gold_v1.jsonl": {
+      "sha256": "bb457e9bee6db8ffbc6b21e589d201c025532a262da27b8bee313e3f7924e24e",
+      "items": 121,
+      "by_language": {
+        "english": 43,
+        "roman_urdu": 37,
+        "urdu_script": 31,
+        "mixed": 8,
+        "unknown": 2
+      },
+      "by_split": {
+        "dev": 80,
+        "heldout": 41
+      },
+      "provenance": "agent-authored synthetic fixtures; NOT human-reviewed",
+      "role": "behavioural regression suite (the author also wrote the rules, so it is not a generalization measure)"
+    },
+    "blind_v1.jsonl": {
+      "sha256": "43572214682cdda0cd4b35abfb4684bd343caceea2767ddd274d365af9d87eab",
+      "items": 72,
+      "provenance": "written blind (guidelines only) by an independent agent; NOT human-reviewed",
+      "role": "consumed: measured once (macro-F1 0.6907, 11 safety-flag misses, 0 false opt-outs), then used for rule development; no longer a held-out measure"
+    },
+    "blind_v2.jsonl": {
+      "sha256": "26e29cdc18764b8cb853e744277bb9d4f1f431abfbfe43f551ee8837861cb7b7",
+      "items": 80,
+      "provenance": "written blind (guidelines only) by a second independent agent; NOT human-reviewed",
+      "role": "the held-out measurement for intent-rules-1.0: macro-F1 0.7364, accuracy 0.725, safety recall 13/19 (opt-out 8/9, human request 5/10), 0 false opt-outs -> BLOCKED_QUALITY. Two spelling fixes were made after this measurement; they are not validated by it",
+      "measured": {
+        "macro_f1": 0.7364,
+        "accuracy": 0.725,
+        "safety_misses": 6,
+        "false_explicit_opt_out": 0
+      }
+    }
+  },
+  "human_review": null,
+  "promotion": "blocked_quality"
+}

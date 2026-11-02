@@ -374,6 +374,8 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
         f"{base}/test-sends/{{send_id}}/confirm", f"{base}/test-sends/{{send_id}}/cancel",
         f"{base}/test-sends/{{send_id}}/mark-indeterminate",
         "/api/v1/inbox/whatsapp/rebuild", "/api/v1/inbox/whatsapp/threads/{thread_id}/review",  # P5.4: local only
+        "/api/v1/inbox/whatsapp/intent/backfill",  # P6.1: local only
+        "/api/v1/inbox/whatsapp/messages/{message_id}/intent-review",
         *(f"/api/v1/release/whatsapp/{p}" for p in (  # P5.5: every one owner-gated; only confirm can send
             "readiness/evaluate", "attestations", "catalog/sync", "pilot", "pilot/{auth_id}/pause",
             "pilot/{auth_id}/resume", "pilot/{auth_id}/revoke", "pilot-sends", "pilot-sends/{send_id}/confirm",

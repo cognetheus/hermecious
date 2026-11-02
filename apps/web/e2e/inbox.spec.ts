@@ -39,10 +39,23 @@ test("INBOX-10 operator reads a signed conversation, read-only, and marks it rev
   await expect(timeline.getByText("<img src=x onerror=alert(1)><script>alert(2)</script>")).toBeVisible();
   await expect(page.locator("main img, main script")).toHaveCount(0);
   await expect(timeline.getByText("Attachment or unsupported message (not downloaded)")).toBeVisible();
-  await expect(page.locator("main textarea, main input")).toHaveCount(0);
+  // No message composition anywhere: the only inputs are the P6.1 intent-review forms (labels and a note).
+  await expect(page.locator("main textarea")).toHaveCount(0);
+  await expect(page.locator("main input:not(form[aria-label='Review intent'] input)")).toHaveCount(0);
+  // P6.1: each signed message carries an intent observation for human review (rules only), never an action.
+  const intents = timeline.getByRole("region", { name: "Intent for review" });
+  await expect(intents).toHaveCount(4, { timeout: 30_000 });
+  await expect(intents.filter({ hasText: "Intent (for review): needs details" })).toHaveCount(1);
+  await expect(intents.filter({ hasText: "Intent (for review): request demo" })).toHaveCount(1);
+  await expect(intents.first()).toContainText("rules only, no model");
+  await expect(intents.first()).toContainText("nothing happens automatically");
   await expect(page.getByRole("button", { name: /send|reply|enrol|consent/i })).toHaveCount(0);
   expect(await page.content()).not.toContain("920000000777"); // the raw number never reaches the browser
 
+  const demo = intents.filter({ hasText: "Intent (for review): request demo" });
+  await demo.getByLabel("Correct label").selectOption("interested");
+  await demo.getByRole("button", { name: "Record review" }).click();
+  await expect(timeline.getByText("Reviewed: corrected as interested")).toBeVisible();
   await page.getByRole("button", { name: "Mark reviewed" }).click();
   await expect(page.getByText("All messages reviewed.")).toBeVisible();
   expect(egress).toEqual([]);

@@ -116,3 +116,17 @@ All routes are under `/api/v1/release/whatsapp`. Only owners and operators can r
 - `eligibility_<deny|defer>:<codes>`;
 - `template_check_failed_<class>`, `template_changed`;
 - `stopped_before_send`.
+
+## P6.1 intent observations ([ADR-031](../adr/ADR-031-intent-observations-for-human-review.md))
+
+**Timeline:** each inbound entry from `GET /api/v1/inbox/whatsapp/threads/{id}` carries `intent`. It holds either the newest `intent.v1` observation for the current classifier version, or `null`. The observation contains:
+- `primary_intent`, `secondary_intents`, `safety_flags`, `language`;
+- `evidence[{start, end, text, reason}]`, `confidence`, `requires_human_review`;
+- `recommended_action` (read-only), `reason_codes`;
+- `classifier_version`, `rules_version`, `model_version: null`, `prompt_version: null`, `classified_at`;
+- `observation_id`, `review`, `notice`.
+
+| Route | Roles | Result |
+|---|---|---|
+| `POST /api/v1/inbox/whatsapp/messages/{message_id}/intent-review` | owner, operator (CSRF) | `{observation_id, decision: confirmed\|corrected, corrected_primary?, note?}` → 201. A correction equal to the label → 409; an unknown label → 422; another tenant's message → 404 |
+| `POST /api/v1/inbox/whatsapp/intent/backfill` | owner | 202 `{job_id}`: the `intent.classify` job classifies signed inbound messages without an observation for the current version |
