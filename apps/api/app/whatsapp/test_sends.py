@@ -44,6 +44,7 @@ from app.contacts.models import Contact, SuppressionEntry
 from app.core.clock import BUSINESS_TZ, Clock
 from app.core.errors import Conflict, DependencyUnavailable, Forbidden, NotFound, Unprocessable
 from app.core.settings import Settings
+from app.inbox import service as inbox
 from app.whatsapp import service as connections
 from app.whatsapp import transport as wa
 from app.whatsapp.config import test_recipient_numbers
@@ -484,6 +485,11 @@ def confirm(
         raise _deny(db, row, "template_changed", now)
     row.state, row.confirmed_by, row.confirmed_at = "reserved", actor.user_id, now
     row.updated_at, row.version = now, row.version + 1
+    inbox.touch(
+        db, org=org, party=inbox.Party(connection.connection_id, recipient.key_id, recipient.address_digest,
+                                       recipient.address_hint),
+        at=now, inbound_seq=0, now=now,
+    )  # fmt: skip  # the P5.4 thread shows the attempt from the moment it is reserved
     try:
         db.commit()  # reserved before any network call: a crash leaves a visible reservation, never a resend
     except IntegrityError:

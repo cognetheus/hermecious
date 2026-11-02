@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # P4.3 (ADR-022): "key_id:secret[,key_id:secret...]", newest first. Contact addresses are stored only as keyed
     # HMAC digests. Required in production; unset elsewhere, contact endpoints refuse (no built-in key).
     contact_hmac_secrets: SecretStr | None = Field(default=None, validation_alias="HERMECIOUS_CONTACT_HMAC_SECRETS")
+    # P5.4 (ADR-029): "key_id:secret[,...]", newest first. Inbound WhatsApp text is kept only sealed (AES-256-GCM)
+    # under these keys and only for a bounded time; unset, no inbound text is kept at all (P5.2 minimization).
+    inbound_content_secrets: SecretStr | None = Field(
+        default=None, validation_alias="HERMECIOUS_INBOUND_CONTENT_SECRETS"
+    )
     # Global outreach stop: when true, every channel-eligibility decision is `deny` (kill_switch_engaged).
     outreach_kill_switch: bool = Field(default=False, validation_alias="HERMECIOUS_OUTREACH_KILL_SWITCH")
     # Batch 07/08: real outbound to prospects stays off until P5.5. `true` refuses to start (never silently ignored).
@@ -91,6 +96,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "contact_hmac_secrets",
+        "inbound_content_secrets",
         "whatsapp_waba_id",
         "whatsapp_phone_number_id",
         "whatsapp_access_token",
@@ -145,6 +151,13 @@ class Settings(BaseSettings):
                 parse_keyring(self.contact_hmac_secrets.get_secret_value())
             except KeyringError:
                 raise ValueError("HERMECIOUS_CONTACT_HMAC_SECRETS") from None
+        if self.inbound_content_secrets is not None:
+            from app.contacts.addresses import KeyringError, parse_keyring  # noqa: PLC0415
+
+            try:
+                parse_keyring(self.inbound_content_secrets.get_secret_value())
+            except KeyringError:
+                raise ValueError("HERMECIOUS_INBOUND_CONTENT_SECRETS") from None
         if self.live_outbound_enabled:  # cannot be enabled before the P5.5 go/no-go (Batch 08 §0.1.2)
             raise ValueError("HERMECIOUS_LIVE_OUTBOUND_ENABLED")
         from app.whatsapp.config import whatsapp_setting_error  # noqa: PLC0415

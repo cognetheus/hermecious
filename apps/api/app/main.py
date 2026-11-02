@@ -19,6 +19,7 @@ from app.core.settings import Settings
 from app.discovery import routes as discovery_routes
 from app.drafts import routes as draft_routes
 from app.evaluation import routes as evaluation_routes
+from app.inbox import routes as inbox_routes
 from app.jobs import routes as job_routes
 from app.offers import routes as offer_routes
 from app.persistence.db import make_engine, make_session_factory
@@ -110,6 +111,7 @@ def create_app(
     app.include_router(simulation_routes.router)
     app.include_router(whatsapp_routes.router)  # public: HMAC-authenticated Meta webhook
     app.include_router(whatsapp_admin_routes.router)
+    app.include_router(inbox_routes.router)  # P5.4: read-only
     assert_api_routes_protected(app)
     install_error_handling(app)
     return app

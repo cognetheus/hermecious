@@ -32,6 +32,7 @@ POSTGRES_USER=hermecious
 POSTGRES_DB=hermecious_e2e
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 HERMECIOUS_CONTACT_HMAC_SECRETS=e2e:$(openssl rand -hex 32)
+HERMECIOUS_INBOUND_CONTENT_SECRETS=e2e:$(openssl rand -hex 32)
 HERMECIOUS_API_PORT=$api_port
 HERMECIOUS_WEB_PORT=$web_port
 EOF
@@ -92,6 +93,45 @@ with factory() as db:
         ))
     db.commit()
 print("seeded synthetic users")
+PY
+# P5.4: synthetic *signed* inbound WhatsApp messages through the real P5.2 receive path (contract_test binding,
+# no Meta connection; the stack's worker processes them). Zero-filled numbers only.
+compose run --rm --no-deps -T -e E2E_RUN_ID api python - <<'PY' || { echo "ERROR inbox seeding failed"; exit 2; }
+import json, os, time, uuid
+
+from pydantic import SecretStr
+from sqlalchemy import select
+
+from app.auth.models import Role, User
+from app.auth.service import Actor
+from app.core.clock import SystemClock
+from app.core.settings import load_settings
+from app.persistence.db import make_engine, make_session_factory
+from app.whatsapp import inbox, service
+
+run, clock = os.environ["E2E_RUN_ID"], SystemClock()
+settings = load_settings().model_copy(update={
+    "whatsapp_mode": "contract_test", "whatsapp_waba_id": "100000000000001",
+    "whatsapp_phone_number_id": "200000000000002", "whatsapp_app_secret": SecretStr("e2e-synthetic-app-secret-0123"),
+})
+factory = make_session_factory(make_engine(str(settings.database_url)))
+texts = ["Assalam o alaikum, fees module ke baare mein batayein",
+         "<img src=x onerror=alert(1)><script>alert(2)</script>", "کیا آپ ڈیمو دکھا سکتے ہیں؟"]
+with factory() as db:
+    owner = db.scalar(select(User).where(User.email_canonical == f"owner-{run}@e2e.example"))
+    actor = Actor(user_id=owner.id, organization_id=owner.organization_id, role=Role.OWNER,
+                  session_id=uuid.uuid4(), verifier="")
+    service.bind_connection(db, actor=actor, clock=clock, settings=settings)
+    now = int(time.time())
+    messages = [{"from": "920000000777", "id": f"wamid.E2E{run}{n}", "timestamp": str(now - 300 + n * 60),
+                 "type": "text", "text": {"body": body}} for n, body in enumerate(texts)]
+    messages.append({"from": "920000000777", "id": f"wamid.E2E{run}media", "timestamp": str(now - 30), "type": "image"})
+    body = {"object": "whatsapp_business_account", "entry": [{"id": "100000000000001", "changes": [{
+        "field": "messages", "value": {"messaging_product": "whatsapp",
+                                       "metadata": {"phone_number_id": "200000000000002"}, "messages": messages}}]}]}
+    counts = inbox.receive(db, settings=settings, now=clock.now(), raw=json.dumps(body).encode(), request_id=None)
+    assert counts["accepted"] == 4, counts
+print("seeded synthetic signed inbound messages")
 PY
 
 cd "$root/apps/web" || exit 2

@@ -61,6 +61,7 @@ class Item:
     normalized: dict[str, Any]
     quarantine: str | None = None
     sender_e164: str | None = field(default=None, repr=False)  # used for the keyed digest, never stored
+    text_body: str | None = field(default=None, repr=False)  # sealed at receive (P5.4) or dropped; never logged
 
     def logical_key(self, connection_id: str) -> str:
         n = self.normalized
@@ -111,9 +112,10 @@ def _message(raw: Any, phone: str, waba: str, received_at: datetime) -> Item:
         "kind": kind,
         "text_length": len(text) if text is not None else None,
         "stop_signal": bool(text is not None and _STOP.match(text)),
-    }  # the text itself is not kept (Batch 08 §4: minimise inbound content at rest)
+    }  # the text itself is never in the item: it is sealed separately, or dropped (Batch 08 §4, ADR-029)
     item = Item("incoming_message", phone, waba, wamid, stamp, normalized, problem)
     item.sender_e164 = f"+{sender}" if isinstance(sender, str) and _DIGITS.fullmatch(sender) else None
+    item.text_body = text
     return item
 
 

@@ -2538,3 +2538,98 @@ All offline: Postgres plus a fake Graph layer injected through `test_sends.CONTR
 **Owner review:** ADR-026, ADR-027 and ADR-028 are Proposed and await acceptance.
 
 **P5.4 readiness:** YES (engineering: test send and status path proven offline). **Production outreach-readiness:** NO. `HERMECIOUS_LIVE_OUTBOUND_ENABLED` still refuses to start; P5.5 owns the go/no-go decision.
+
+## P5.4 — Secure read-only WhatsApp inbox and durable timeline (2026-11-02)
+
+**Scope:** `docs/phases/OPUS_P5.4_PROMPT.md`, blueprint §4 P5.4. **Base:** `7a6767e` (P5.3). **Migration:** `0023_inbox_threads` (additive). The owner's instruction was "pick 5.4, 5.5 and 6.1 in order"; the standing continuous-execution preference applies.
+
+### Conflicts and safe defaults
+
+1. **Missing batch document.** The prompt cites `docs/phases/HERMECIOUS_BATCH_09_P5.4-P6.1.md`, which is not in the repository. The prompt and the blueprint were used instead.
+2. **Inbound text (security-relevant).** P5.2 (ADR-027) keeps no inbound text, but P5.4 must show it and P6.1 must classify it. Batch 08 §4 says "encrypt or minimize". The safe default is ADR-029:
+   - text is sealed with AES-256-GCM under a new owner-provisioned keyring `HERMECIOUS_INBOUND_CONTENT_SECRETS`;
+   - the associated data binds each ciphertext to its connection and message;
+   - retention is 90 days;
+   - **without a key nothing is kept**, which is exactly P5.2's behaviour.
+
+   The new dependency is `cryptography` (50.0.2). ADR-029 is Proposed; whether to provision the key is the owner's decision.
+3. **Observers.** The prompt says "operator-only reads". Observers get 403 on all inbox routes, because the content is business correspondence.
+
+### Inventory
+
+- **Reused:**
+  - P5.2 `provider_inbound_messages`, `provider_event_items` (`arrival_seq`), observations and projection;
+  - P5.3 `provider_test_sends` and `provider_test_recipients`;
+  - P4.3 contacts and suppressions;
+  - the P1.5 job runner and lease heartbeat;
+  - P1.1 auth, CSRF and `allow_roles`.
+- **Not duplicated:** webhook parsing and contact digests are unchanged. Text is sealed at receive, inside the existing P5.2 path.
+
+### Design (ADR-029 Proposed; contract and runbook §3)
+
+- **`inbox_threads`:** one row per (connection, sender key id, sender digest), with org-scoped composite foreign keys. It is touched in the same transaction as the P5.2 inbound row and the P5.3 reservation.
+  - The `inbox.rebuild` job (owner-triggered) recomputes threads from the immutable sources.
+  - Every write uses `greatest`, so redelivery, racing workers, rebuilds and concurrent processing converge, and a no-op rebuild bumps no version.
+- **Unread:** `arrival_seq > reviewed_through_seq`, never a counter.
+- **Timeline:** read from the source tables, with provenance `verified_inbound`, `provider_test` and `signed_webhook`. Keyset paging on `(time, id)`, with caps of 50 threads and 100 entries.
+- **Identity:** the label comes from registries only, in this order: TEST recipient (flagged `matches_sourced_contact` if it collides with a contact), then known contact, then **Unmatched WhatsApp contact**. Numbers are masked. Nothing is created or enrolled.
+- **API:** `/api/v1/inbox/whatsapp/threads`, `/threads/{id}`, `POST /threads/{id}/review` (monotonic, clamped, audited once) and `POST /rebuild` (owner). Responses carry `Cache-Control: private, no-store`.
+- **UI `/inbox/whatsapp`:**
+  - READ ONLY marker; TEST label; Asia/Karachi times;
+  - text as a plain node with `dir="auto"`;
+  - placeholders for attachments, polling for updates;
+  - Mark reviewed is the only control.
+- **Purge:** the P5.2 processor and the rebuild strip sealed text older than 90 days.
+
+### Acceptance evidence
+
+All synthetic: events are signed locally and test sends use the in-process fake Graph layer. Zero-filled numbers only.
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| INBOX-01 | `test_inbox_01_…` | A signed inbound creates exactly 1 thread: `Unmatched WhatsApp contact`, `+92 ••••••• 555`, TEST, unread 1, text decrypted. 0 contacts and 0 accounts created. With the key removed, earlier text → `unreadable` and new text → `not_retained`. 0 egress attempts | VERIFIED |
+| INBOX-02 | `test_inbox_02_…` | Same wamid redelivered in another envelope → 1 message. Two racing workers on the first arrivals → 1 thread, unread 2. Redelivery after processing leaves unread at 2 | VERIFIED |
+| INBOX-03 | `test_inbox_03_08_…` | A status before Graph answered, then read → sent → failed: delivery `read` + `failed_after_delivered`, statuses in provider order. A second accepted send with no webhook → `accepted_unknown_delivery`. The reply from the test number lands in the same thread | VERIFIED |
+| INBOX-04 | `test_inbox_04_…` | A crash inside every item's transaction → 0 threads (nothing half-applied). Re-queued replay → 2 threads, 4 entries. Rebuild ×2 → identical rows including versions. A rolled-back rebuild changes nothing. Threads deleted then rebuilt → same values and same timelines. 0 egress | VERIFIED |
+| INBOX-05 | `test_inbox_05_…` | Wrong WABA or unbound phone → no thread. Another org: empty list, 404 on read, review and rebuild. Observer → 403 on every route. Operator rebuild → 403. Review without CSRF → 403. Revoked session → 401. Review state unchanged | VERIFIED |
+| INBOX-06 | `test_inbox_06_…` | `<script>`/`onerror` text and a lone surrogate are returned as data (surrogate → U+FFFD); Urdu intact. `private, no-store`. The sender number never appears in API responses, logs or stored JSON (sealed only). Tampered or moved ciphertext → `unreadable`. +91 days → `expired`, and the processor purged the old sealed text | VERIFIED |
+| INBOX-07 | `test_inbox_07_…` | 7 threads with identical timestamps paged 3 at a time: 7 unique, same order as one page. A timeline with ties paged with `before`: 6 unique. A backdated late message after a review sorts by provider time and is unread. Bad cursor or limit → 422 | VERIFIED |
+| INBOX-08 | `test_inbox_03_08_…` | The test-recipient thread stays `TEST recipient` even after a sourced contact with that number is created (flagged `matches_sourced_contact`). Entries are only `inbound` or `test_outbound`; no simulated delivery | VERIFIED |
+| INBOX-09 | `test_inbox_09_…` | Two racing reviews → one `changed`, exactly 1 audit row. Lower or beyond-max values → no change (clamped). Extra field → 422. A new message → unread 1 again. 0 egress | VERIFIED |
+| INBOX-10 | `test_inbox_10_…`; `e2e/inbox.spec.ts` | Inbox routes are exactly 2 GET + review + rebuild; no send, reply or dispatch job. E2E (signed synthetic inbound seeded through the real P5.2 path): READ ONLY, TEST, Asia/Karachi, Urdu `dir=auto`, markup inert (0 `img`/`script`, no dialog), attachment placeholder, no input, textarea or send/reply button, raw number absent from page source. Mark reviewed works; Meta hosts blocked with 0 attempts. Observer is refused. `@after-restart`: the timeline (4 entries) and the reviewed state survive the API/web restart | VERIFIED |
+
+**Unit:** `tests/unit/test_inbound_content.py` (seal and unseal, AAD binding, tampering, key rotation, truncation, cleaning). **WAAD-10** now pins the two local inbox POSTs as well.
+
+### Mutation checks (scratch runner; originals restored)
+
+10 of 10 were caught:
+- unread ignores review (07);
+- touch regresses activity (04);
+- review not clamped (09);
+- review not monotonic (09);
+- thread not org-scoped (05);
+- AAD unbound (unit + 06);
+- no expiry on read (06);
+- contact label wins over TEST (03/08);
+- observer allowed (05);
+- no purge (06).
+
+### Incidental fixes
+
+- **`Result.tuples()`** is deprecated in SQLAlchemy 2.1, so plain iteration is used. SQLAlchemy also has no JSONB `-` operator; an explicit `op("-")` is used instead.
+- **Rebuild idempotency key:** an ISO timestamp breaks the jobs table's key format (`+`), so it uses epoch milliseconds.
+
+**External:** WATEST-10 is still BLOCKED_EXTERNAL. Live inbound has not been observed against a real Meta number; the inbox is proven only on locally signed synthetic events.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/test-integration.sh tests/integration/test_inbox.py` (after fixes) | 0 | 9 passed |
+| `bash scripts/test-e2e.sh` (first run) | 1 | 33 + 12 passed; the observer check failed on a strict-mode `alert` match (Next's route announcer). Fixed by matching the text |
+| `bash scripts/check.sh` (1st) | 1 | Docker Hub `EOF` while pulling the base image for the integration build (transient); every other step passed |
+| `bash scripts/check.sh` (2nd) | 1 | Only `ruff check` and `ruff format` failed, on the new migration `0023` (line length); everything else passed (unit + contract 434, integration 436, e2e 34 + 12) |
+| `bash scripts/check.sh` (3rd) | 0 | All passed: unit + contract 434, web 2, integration **436**, e2e **34 + 12** (including `inbox.spec.ts` and `@after-restart`) |
+| Dev: `alembic upgrade head` (`0022 -> 0023`) | see below | |
+
+**P5.5 readiness:** YES (engineering). **Production outreach-readiness:** NO.

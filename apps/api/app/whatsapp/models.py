@@ -185,7 +185,8 @@ class ProviderMessageStatus(Base):
 
 
 class ProviderInboundMessage(Base):
-    """An authenticated inbound message: sender as a keyed digest, no text body kept (minimization)."""
+    """An authenticated inbound message: sender as a keyed digest. Its text, if kept at all, is sealed on the event
+    item (P5.4, ADR-029)."""
 
     __tablename__ = "provider_inbound_messages"
     __table_args__ = (
@@ -197,6 +198,7 @@ class ProviderInboundMessage(Base):
         CheckConstraint("kind IN ('text', 'image', 'document', 'interactive', 'unsupported')", name="kind"),
         CheckConstraint("assignment IN ('contact', 'unassigned')", name="assignment"),
         CheckConstraint("sender_digest ~ '^[0-9a-f]{64}$'", name="sender_digest_format"),
+        Index("ix_provider_inbound_party", "provider_connection_id", "sender_key_id", "sender_digest"),  # P5.4
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

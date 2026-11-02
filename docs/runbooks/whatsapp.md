@@ -68,3 +68,12 @@ Nothing to configure. `HERMECIOUS_WHATSAPP_MODE=simulation` refuses every Meta I
 **Stop at any time:** set the kill switch to `false`, which denies confirms immediately, or set the mode to `simulation`.
 
 **Daily cap:** 3 confirmed attempts per Asia/Karachi day.
+
+## 3. Read-only inbox (P5.4, ADR-029)
+
+1. **Optional: keep inbound text.** Set `HERMECIOUS_INBOUND_CONTENT_SECRETS=k1:<32+ random characters>` (a SECRET) and restart the API and worker.
+   - Without it, inbound messages are listed but their text is never stored.
+   - Text is sealed for 90 days. To rotate, put a new key first and keep the old one until its texts have expired.
+2. **Read:** owners and operators open **Inbox**. **Mark reviewed** is local only and sends nothing.
+3. **Repair the projection** if needed: `POST /api/v1/inbox/whatsapp/rebuild` (owner). It is safe to repeat and changes nothing if the threads are already correct.
+4. **Stop storing text:** unset the key and restart. Text already sealed stays until it expires; it becomes unreadable once the key is gone.

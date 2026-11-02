@@ -76,3 +76,18 @@ All routes are under `/api/v1/integrations/whatsapp`. They need a session, and C
 - `recipient_revoked`, `recipient_not_allowlisted`, `recipient_suppressed`, `recipient_is_sourced_contact`;
 - `daily_cap_reached`;
 - `template_check_failed_<error_class>`, `template_changed`.
+
+## P5.4 read-only inbox ([ADR-029](../adr/ADR-029-read-only-inbox-and-sealed-inbound-text.md))
+
+All routes are under `/api/v1/inbox/whatsapp`. Only owners and operators can use them; observers get 403. Every response carries `Cache-Control: private, no-store`.
+
+| Route | Result |
+|---|---|
+| `GET /threads?cursor=&limit≤50` | `{items: [{id, party: {type, label, address (masked), conflict, suppressed, environment}, last_activity_at, unread, last_inbound_seq, reviewed_through_seq, reviewed_at, version}], next_cursor}`. Newest activity first; keyset paging. A bad cursor or limit → 422 |
+| `GET /threads/{id}?before=&limit≤100` | `{thread, entries, before_cursor, read_only: true}`. Entries are in chronological order |
+| `POST /threads/{id}/review` | `{through_seq}` → `{reviewed_through_seq, version, changed}`. Monotonic and clamped; audited once |
+| `POST /rebuild` (owner) | 202 `{job_id}`: the `inbox.rebuild` job recomputes threads from the source tables |
+
+**Entry shapes:**
+- **inbound:** `{type: "inbound", id, at, seq, kind, text|null, content, truncated, stop_signal, provenance: "verified_inbound"}`. `content` is one of `available`, `not_retained`, `expired`, `unreadable` or `not_text`.
+- **test outbound:** `{type: "test_outbound", id, at, state, template, provider_message_id, error_class, delivery, statuses[{status, at, error_code, provenance: "signed_webhook"}], provenance: "provider_test"}`.

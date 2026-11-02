@@ -34,9 +34,10 @@ from app.contacts.models import Contact, SuppressionEntry
 from app.core.clock import FixedClock
 from app.core.errors import DependencyUnavailable
 from app.core.settings import Settings
+from app.inbox import service as inbox
 from app.jobs import registry as job_registry
 from app.jobs import service as job_service
-from app.whatsapp import webhook
+from app.whatsapp import content, webhook
 from app.whatsapp.models import (
     ProviderConnection,
     ProviderEventItem,
@@ -79,6 +80,7 @@ def receive(db: Session, *, settings: Settings, now: datetime, raw: bytes, reque
     counts = dict(parsed.counts) | {"accepted": 0, "duplicates": 0, "unmapped": 0, "quarantined": 0}
     connections = _bound(db, settings, parsed.items)
     keys = contacts.keyring(settings) if any(i.sender_e164 for i in parsed.items) else None
+    sealing = content.keyring(settings)
     envelope = ProviderWebhookEnvelope(
         provider="meta_whatsapp", body_sha256=hashlib.sha256(raw).hexdigest(), parse_status="accepted",
         quarantine_reason=parsed.quarantine_reason, counts_json={}, request_id=request_id, received_at=now,
@@ -99,6 +101,9 @@ def receive(db: Session, *, settings: Settings, now: datetime, raw: bytes, reque
                 "sender_digest": addresses.digest(key, item.sender_e164),
                 "sender_hint": addresses.mask(item.sender_e164),
             }
+        if item.text_body and sealing is not None and item.provider_message_id and not item.quarantine:
+            associated = content.aad(str(connection.id), item.provider_message_id)
+            normalized["sealed_text"] = content.seal(sealing, associated, content.clean(item.text_body))
         state = "quarantined" if item.quarantine else "pending"
         inserted = db.scalar(
             insert(ProviderEventItem)
@@ -227,6 +232,14 @@ def _inbound(db: Session, item: ProviderEventItem, connection: ProviderConnectio
     )  # fmt: skip
     if created is None:
         return  # this logical message was already recorded: no second side effect
+    inbox.touch(
+        db,
+        org=org,
+        party=inbox.Party(connection.id, n["sender_key_id"], n["sender_digest"], n["sender_hint"]),
+        at=item.provider_timestamp,
+        inbound_seq=item.arrival_seq,
+        now=now,
+    )  # the P5.4 thread, in the same transaction as the message
     if contact is not None:  # verified service-window provenance only: max(prior, this), never marketing consent
         db.execute(
             insert(ProviderServiceWindow)
@@ -274,6 +287,8 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
     )
     if connection is None:
         raise job_registry.PermanentJobError("connection_not_found")
+    if inbox.purge_expired(db, org, connection_id, ctx.now):  # bounded retention of sealed text (ADR-029)
+        db.commit()
     done = failed = 0
     while done + failed < BATCH:
         job_registry.keep_alive(ctx)

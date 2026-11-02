@@ -199,6 +199,20 @@ class ProviderInboxPayload(_Payload):
     connection_id: uuid.UUID
 
 
+def _inbox_rebuild(db: Session, ctx: JobContext, payload: Any) -> dict[str, Any]:
+    from app.inbox.service import rebuild  # noqa: PLC0415  # avoids an import cycle
+
+    result = rebuild(db, ctx.organization_id, payload.connection_id, ctx.now)
+    db.commit()
+    return result
+
+
+class InboxRebuildPayload(_Payload):
+    """`inbox.rebuild` v1 (P5.4): recompute inbox threads from the signed source tables. Reads only; never sends."""
+
+    connection_id: uuid.UUID
+
+
 REGISTRY: dict[tuple[str, int], JobSpec] = {
     ("diagnostic.noop", 1): JobSpec(
         "diagnostic.noop", 1, NoopPayload, _noop, max_attempts=3, environments=frozenset({"development", "test"})
@@ -233,6 +247,14 @@ REGISTRY: dict[tuple[str, int], JobSpec] = {
         ProviderInboxPayload,
         _provider_inbox,
         max_attempts=5,
+        environments=frozenset({"development", "test", "production"}),
+    ),
+    ("inbox.rebuild", 1): JobSpec(
+        "inbox.rebuild",
+        1,
+        InboxRebuildPayload,
+        _inbox_rebuild,
+        max_attempts=3,
         environments=frozenset({"development", "test", "production"}),
     ),
     ("simulation.run", 1): JobSpec(

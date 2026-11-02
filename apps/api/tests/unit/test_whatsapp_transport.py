@@ -351,6 +351,7 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
         f"{base}/test-recipients/{{recipient_id}}/revoke", f"{base}/test-sends",
         f"{base}/test-sends/{{send_id}}/confirm", f"{base}/test-sends/{{send_id}}/cancel",
         f"{base}/test-sends/{{send_id}}/mark-indeterminate",
+        "/api/v1/inbox/whatsapp/rebuild", "/api/v1/inbox/whatsapp/threads/{thread_id}/review",  # P5.4: local only
     ])  # fmt: skip
 
 
