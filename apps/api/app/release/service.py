@@ -34,6 +34,8 @@ from app.whatsapp.models import ProviderConnection, ProviderTemplate
 PILOT_ACK = "I authorize a manual, low-volume WhatsApp pilot to opted-in contacts only."
 MAX_PILOT_DAYS = 14
 PAUSE_REASONS = ("human_takeover", "quality_alert", "investigation", "opt_out_review")
+# Set only by the pilot's circuit breaker (auth or quota errors from Meta); an owner resumes after investigating.
+AUTOMATIC_PAUSE_REASONS = ("provider_error",)
 BANNER = "PRODUCTION OUTBOUND DISABLED UNTIL SEPARATE OPERATOR GO-LIVE"
 
 

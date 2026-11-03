@@ -115,6 +115,7 @@ def checks(db: Session, org: uuid.UUID, settings: Settings, now: datetime) -> li
                                           == ProviderTestSend.provider_connection_id)
               & (ProviderStatusObservation.provider_message_id == ProviderTestSend.provider_message_id))
         .where(ProviderTestSend.organization_id == org, ProviderTestSend.state == "provider_accepted",
+               ProviderTestSend.simulated_transport.is_(False),  # a fake Graph layer is never real evidence
                ProviderStatusObservation.status.in_(("delivered", "read")))
         .order_by(ProviderTestSend.confirmed_at)
         .limit(1)

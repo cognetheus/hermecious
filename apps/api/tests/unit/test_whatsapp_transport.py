@@ -373,6 +373,7 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
         f"{base}/test-recipients/{{recipient_id}}/revoke", f"{base}/test-sends",
         f"{base}/test-sends/{{send_id}}/confirm", f"{base}/test-sends/{{send_id}}/cancel",
         f"{base}/test-sends/{{send_id}}/mark-indeterminate",
+        f"{base}/inbox/requeue",  # P5.2 audit fix: owner-only retry of parked inbound items
         "/api/v1/inbox/whatsapp/rebuild", "/api/v1/inbox/whatsapp/threads/{thread_id}/review",  # P5.4: local only
         "/api/v1/inbox/whatsapp/intent/backfill",  # P6.1: local only
         "/api/v1/inbox/whatsapp/messages/{message_id}/intent-review",
@@ -422,3 +423,14 @@ def test_waad_03_each_mode_refuses_its_misconfiguration(overrides: dict[str, Any
 def test_waad_03_provider_test_is_valid_only_with_every_test_identity_field() -> None:
     settings = make_settings(**PROVIDER_TEST)
     assert settings.whatsapp_mode == "provider_test" and settings.whatsapp_test_outbound_enabled is False
+
+
+def test_every_error_class_maps_to_a_safe_status_and_retry_class() -> None:
+    from app.whatsapp.contracts import ERROR_TAXONOMY, ErrorClass, ProviderError  # noqa: PLC0415
+
+    assert set(ERROR_TAXONOMY) == set(ErrorClass.__args__)  # type: ignore[attr-defined]
+    for name, (status, retry) in ERROR_TAXONOMY.items():
+        assert status in (200, 400, 401, 403, 409, 422, 500, 503), name
+        assert retry in ("never", "after_backoff", "manual_investigation")
+    assert ERROR_TAXONOMY["provider_uncertain"][1] == "manual_investigation"  # never a blind resend
+    assert ProviderError.of("something_new", "req_1") == ProviderError("unknown", 500, "manual_investigation", "req_1")

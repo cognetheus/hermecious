@@ -75,3 +75,11 @@ They are public by design, because Meta has no session. They are the only entrie
 - **Stop receiving:** unsubscribe the callback at Meta (operator action), or unset the app secret (POST → 503, GET → 403).
 - **Data:** keep all stored evidence.
 - **Schema:** downgrade 0021 only on a disposable database.
+
+## Amendment (2026-11-03, audit)
+
+- **Oversized batches:** a signed batch over the item limits is refused with **413** and nothing is stored. It is never acknowledged and truncated.
+- **Transient database errors** (deadlock, lost connection) during processing are retried by the job and never parked.
+- **Parked items** are replayed only through the owner's audited `POST …/inbox/requeue`.
+- **Reversible stop:** `HERMECIOUS_WHATSAPP_INBOX_PAUSED` pauses processing; receipt continues.
+- **Naming:** the unmapped quarantine reason is `webhook_unmapped`, matching the §4 taxonomy.

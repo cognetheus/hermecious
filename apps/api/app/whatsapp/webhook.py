@@ -133,6 +133,28 @@ def _status(raw: Any, phone: str, waba: str, received_at: datetime) -> Item:
     return Item("delivery_status", phone, waba, wamid, stamp, {"status": status, "error_code": code}, problem)
 
 
+TOO_MANY_ITEMS = "too_many_items"
+
+
+def _over_limits(entries: list[Any]) -> bool:
+    if len(entries) > MAX_ENTRIES:
+        return True
+    for entry in entries:
+        changes = entry.get("changes") if isinstance(entry, dict) else None
+        if not isinstance(changes, list):
+            continue
+        if len(changes) > MAX_CHANGES:
+            return True
+        for change in changes:
+            value = change.get("value") if isinstance(change, dict) else None
+            if isinstance(value, dict) and any(
+                isinstance(value.get(k), list) and len(value[k]) > MAX_ITEMS_PER_CHANGE
+                for k in ("messages", "statuses")
+            ):
+                return True
+    return False
+
+
 def parse(raw: bytes, received_at: datetime) -> Parsed:
     """Bounded parse of an already-verified body into per-item facts (or a quarantine reason)."""
     try:
@@ -142,8 +164,10 @@ def parse(raw: bytes, received_at: datetime) -> Parsed:
     if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account":
         return Parsed([], "object_unsupported")
     entries = data.get("entry")
-    if not isinstance(entries, list) or not entries or len(entries) > MAX_ENTRIES:
+    if not isinstance(entries, list) or not entries:
         return Parsed([], "payload_invalid")
+    if _over_limits(entries):  # never acknowledge-and-truncate: the caller refuses the body (413)
+        return Parsed([], TOO_MANY_ITEMS)
     items: list[Item] = []
     counts = {"unsupported_fields": 0, "invalid_changes": 0}
     for entry in entries:
@@ -152,7 +176,7 @@ def parse(raw: bytes, received_at: datetime) -> Parsed:
         if not isinstance(waba, str) or not _DIGITS.fullmatch(waba) or not isinstance(changes, list):
             counts["invalid_changes"] += 1
             continue
-        for change in changes[:MAX_CHANGES]:
+        for change in changes:
             if not isinstance(change, dict) or not isinstance(change.get("value"), dict):
                 counts["invalid_changes"] += 1
                 continue
@@ -171,8 +195,8 @@ def parse(raw: bytes, received_at: datetime) -> Parsed:
                 )
                 continue
             messages, statuses = value.get("messages"), value.get("statuses")
-            for raw_message in (messages if isinstance(messages, list) else [])[:MAX_ITEMS_PER_CHANGE]:
+            for raw_message in messages if isinstance(messages, list) else []:
                 items.append(_message(raw_message, phone, waba, received_at))
-            for raw_status in (statuses if isinstance(statuses, list) else [])[:MAX_ITEMS_PER_CHANGE]:
+            for raw_status in statuses if isinstance(statuses, list) else []:
                 items.append(_status(raw_status, phone, waba, received_at))
     return Parsed(items, None if items else "no_items", counts)

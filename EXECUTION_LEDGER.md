@@ -2815,3 +2815,102 @@ Fake transports only; Meta hosts are blocked (`no_egress`: 0 attempts). The posi
 **P6.1 status:** engineering VERIFIED (INTENT-01..06, 09, 10). INTENT-07 is **BLOCKED (human review pending)**. INTENT-08 is **BLOCKED_QUALITY**: on independent data, macro-F1 is 0.736 against the 0.85 target and safety recall is 13/19. The intent feature remains manual-review only.
 
 **P6.2 readiness:** do not start until INTENT-07/08 are resolved or the owner explicitly accepts manual-review-only intent. **Production outreach-readiness:** NO.
+
+## End-to-end audit of P5.1–P6.1 against their prompts (2026-11-03)
+
+**Trigger:** the owner asked "confirm all previous prompts are completed end 2 end, resolve any gaps", then "decide for yourself but complete all prompts". An independent read-only audit agent compared every requirement, acceptance ID and mandatory negative case in Batch 08 and the P5.4, P5.5 and P6.1 prompts against the code, tests and this ledger. It was not given my conclusions. It reported **23 gaps**. All 23 are resolved below, or deliberately recorded with a reason.
+
+### Behaviour fixed (real gaps, not just missing tests)
+
+| # | Gap | Fix | Proof |
+|---|---|---|---|
+| 2 | P5.5 pilot re-read only the stop and live gate after reserving | It also re-reads the authorization (pause, revoke, expiry) and the connection (disabled) → `stopped_before_send` | `test_release_09_a_pause_revocation_or_disabled_connection_…` ×3 |
+| 4 | A contract-test fake plus a synthetic webhook could mark WATEST-10 VERIFIED | `provider_test_sends.simulated_transport` (migration **0026**; existing rows `true`); readiness counts only real-network sends | `test_watest_10_a_fake_graph_receipt_is_never_real_evidence` |
+| 6 | Deadlocks and lost connections parked items forever; replay only by raw SQL | Transient DB errors → job retry; owner `POST /integrations/whatsapp/inbox/requeue` (bounded, audited) | `test_wahook_06_a_deadlock_is_retried_…`; INBOX-04 now uses the route |
+| 7 | Oversized batches were acknowledged with 200 and silently truncated | Refused whole with **413**, nothing stored | `test_wahook_08_an_oversized_batch_is_refused_whole_…` |
+| 8 | A contact could be created on a registered test phone | P4.3 refuses it (409); confirm-time `recipient_is_sourced_contact` still guards imported rows | INBOX-03 (409); `test_watest_04_a_number_that_became_a_sourced_contact_…` |
+| 11 | No circuit breaker on 401/429 | `provider_auth` or `provider_quota` auto-pauses the pilot (`provider_error`) until an owner resumes it | `test_release_08_auth_or_quota_errors_trip_the_breaker` |
+| 13 | **Found by the new test:** a concurrent P5.3 confirm returned **500**, not 409 (the P5.4 thread touch flushed the in-flight unique index outside the guard) | The reservation and the touch commit inside one guarded block | `test_watest_05_expired_previews_and_a_send_in_flight_…` |
+| 19 | No `ProviderError {public_code, http_status, retry_class, correlation_id}`; `unmapped` ≠ `webhook_unmapped` | `ERROR_TAXONOMY` + `ProviderError` cover every §4 class; P5.3 errors use it; quarantine reason renamed | `test_every_error_class_maps_to_a_safe_status_and_retry_class` |
+| 20 | No reversible processing stop | `HERMECIOUS_WHATSAPP_INBOX_PAUSED` (receipt continues; processing waits); runbook §1 rewritten | `test_wahook_06_…` (pause half) |
+
+### Tests added for behaviour that existed but was unproven
+
+| # | Spec case | Test |
+|---|---|---|
+| 1 | Contact opts out between preview and confirm (pilot) | `test_release_04_the_contact_opts_out_between_preview_and_confirm` |
+| 3 | Number or token leaking into logs, DB or exports | `test_release_07_the_number_and_token_never_reach_logs_storage_or_exports` (JSON logs; `pilot_sends`, `action_audits`, `readiness_assessments`; the readiness page) |
+| 9 | Invalidation by build, re-binding, callback failure, P1.3 offer change | `test_release_02_build_binding_callbacks_or_offer_changes_…` ×4 |
+| 10 | Public listing phone with no opt-in, another purpose, wrong WABA | `test_release_04_no_opt_in_another_purpose_or_another_waba_…` (expired consent stays covered by the P4.3 ELIG tests) |
+| 12 | Catalog 401/429/5xx at sync and at confirm | `test_watest_02_catalog_errors_never_send`; `test_release_03_a_failing_meta_catalog_check_never_sends` |
+| 13 | Preview TTL expiry; in-flight guard (P5.3 and P5.5) | `test_watest_05_expired_…`; `test_release_07_expired_previews_and_a_send_in_flight_…` |
+| 14 | Race tests did not prove concurrency | WAHOOK-06 and INBOX-02 use one-job workers; INBOX-02 holds both workers inside the thread upsert with a barrier and asserts both arrived |
+| 15 | P5.3 confirm dialog untested | `apps/web/tests/whatsapp-confirm.test.tsx` (jsdom + Testing Library, pinned dev dependencies): exact REAL label, masked number, disabled until the checkbox, confirm body is only digest + nonce, operators get no send button |
+| 16 | Two tenants with the same digest and the same wamid | `test_inbox_05_two_tenants_with_the_same_sender_digest_and_message_id_never_collide` |
+| 17 | Invalid or stale timestamps; unknown status | `test_wahook_09_invalid_and_stale_timestamps_…` |
+| 18 | Batch 08 §5 fixture files missing | 8 scrubbed `webhook_*` fixtures + README; `test_wahook_fixture_files_parse_as_specified` |
+| 21 | No burst test | `test_wahook_10_a_burst_of_signed_deliveries_…` (40 concurrent; p95 < 5 s, max < 10 s, each stored once) |
+| 22 | Pilot limits untested | `test_release_05_pilot_limits_are_enforced` (>3/day 422, >14 days 422, second live pilot 409) |
+| 23 | Intent routes with an expired session; Karachi conversion only by suffix | INTENT-04 now checks 401; `e2e/inbox.spec.ts` compares the row with `Intl` Asia/Karachi formatting of the API's UTC instant |
+
+### Gap 5 / INTENT-08: two more measured rounds (P6.1)
+
+Each round used the previous blind set as development data and then measured **once** on a fresh, independently written blind set:
+
+| Classifier | Fresh blind set | Macro-F1 | Opt-out recall | Human-request recall | False opt-outs |
+|---|---|---|---|---|---|
+| `intent-rules-1.1` | `blind_v3` (90) | 0.7881 | 10/13 | 5/13 | 1 |
+| **`intent-rules-1.2`** (frozen) | **`blind_v4` (100)** | **0.8149** | **7/14** | **9/12** | **0** |
+
+**Per-language accuracy on `blind_v4`:**
+
+| Language | Accuracy | Items |
+|---|---|---|
+| English | 0.643 | 28 |
+| Roman Urdu | 0.893 | 28 |
+| Urdu script | 0.857 | 28 |
+| Mixed | 0.583 | 12 |
+| Unknown | 1.0 | 4 |
+
+The full confusion matrices come from `uv run python -m app.intent.evaluate tests/fixtures/intent/blind_v4.jsonl`.
+
+- **Failures concentrate in long-tail English opt-outs and politeness:** "Stopp", "please take us off your list", "kindly don't message this number again", "msg bnd kro", plus script-mixed refusals.
+- **Status:** iterations stopped. **INTENT-08 remains BLOCKED_QUALITY. INTENT-07 remains BLOCKED (no human review).** The feature stays manual-review only.
+- **Recommended path:** human-reviewed real replies, then a semantic classifier behind a real gateway (ADR-031 amendment).
+
+### Mutation checks on the audit fixes (originals restored)
+
+8 of 8 were caught, each by its intended test:
+
+| Mutant | Caught by |
+|---|---|
+| Pause or revoke not re-read after the reservation | RELEASE-09 (new) |
+| Connection not re-read | RELEASE-09 (new) |
+| No circuit breaker | `…trip_the_breaker` |
+| Fake receipt counts as WATEST-10 | `test_watest_10_…` |
+| Deadlock parked | `test_wahook_06_a_deadlock_…` |
+| Oversized batch accepted | `test_wahook_08_an_oversized_batch_…` (`200 == 413`) |
+| Contact allowed on a test phone | INBOX-03 |
+| Pause flag ignored | `test_wahook_06_…` |
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| Targeted integration runs during the fixes | 1 → 0 | Exposed the P5.3 in-flight **500** (fixed) and two test-setup errors (utility consent wording; one worker had claimed both jobs) |
+| `bash scripts/check.sh` | 0 | Unit + contract **471**, web **4** (including the new confirm-dialog test), integration **484**, e2e **36 + 12** |
+| Dev: `alembic upgrade head` (`0025 -> 0026`) | 0 | (below) |
+
+### Status after the audit
+
+| Subphase | Status |
+|---|---|
+| P5.1 WAAD-01..10 | VERIFIED |
+| P5.2 WAHOOK-01..10 | VERIFIED, including the new oversize, timestamp, burst, deadlock, pause and requeue cases |
+| P5.3 WATEST-01..09 | VERIFIED |
+| P5.3 WATEST-10 | **BLOCKED_EXTERNAL** (now also impossible to fake) |
+| P5.4 INBOX-01..10 | VERIFIED |
+| P5.5 RELEASE-01..10 | VERIFIED on fakes; production **NO_GO** (external prerequisites and the P4.4 production-approval decision) |
+| P6.1 | INTENT-01..06, 09, 10 VERIFIED; INTENT-07 **BLOCKED** (no human review); INTENT-08 **BLOCKED_QUALITY** (`blind_v4`: 0.815 vs 0.85; safety recall 16/26) |
+
+**Production outreach-readiness: NO.** No message was sent and no live flag was changed.

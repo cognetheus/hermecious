@@ -375,6 +375,9 @@ class ProviderTestSend(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str] = mapped_column(String(100))
     request_digest: Mapped[str] = mapped_column(String(64))
+    # P5.5 (ADR-030): True unless the single Graph call went over the pinned real client. Readiness counts only
+    # real sends as WATEST-10 evidence; existing rows default to True (unknown is never "real").
+    simulated_transport: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer)

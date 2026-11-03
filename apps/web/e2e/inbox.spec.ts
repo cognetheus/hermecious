@@ -26,6 +26,13 @@ test("INBOX-10 operator reads a signed conversation, read-only, and marks it rev
   const row = page.getByRole("list", { name: "Conversations" }).getByRole("listitem").filter({ hasText: SENDER });
   await expect(row).toContainText("TEST");
   await expect(row).toContainText("(Asia/Karachi)");
+  // INBOX-07: the UTC instant is shown converted to Asia/Karachi, not merely labelled.
+  const utc = await page.evaluate(async () => {
+    const body = (await (await fetch("/api/v1/inbox/whatsapp/threads")).json()) as { items: { last_activity_at: string }[] };
+    return body.items[0].last_activity_at;
+  });
+  const karachi = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", dateStyle: "medium", timeStyle: "short" }).format(new Date(utc));
+  await expect(row).toContainText(karachi);
   // The worker processes the seeded signed items asynchronously; polling refreshes the list.
   await expect(row).toContainText("4 unread", { timeout: 30_000 });
   await row.getByRole("link", { name: "Unmatched WhatsApp contact" }).click();

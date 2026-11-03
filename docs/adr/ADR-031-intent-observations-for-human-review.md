@@ -60,3 +60,17 @@ The targets (held-out macro-F1 ≥ 0.85 and 100% recall on clear opt-outs and hu
 - **Rollback:** observations are append-only and derived; to roll back, drop migration 0025 or stop showing them.
 - **No PII leaves the server.** There is no remote model, and messages with possible sensitive data are flagged for redacted review.
 - **Future models:** a semantic adapter (P6.2+) may append observations under a new classifier version, inside the same schema and allowlist, and only through a real gateway.
+
+## Amendment (2026-11-03): two more measured rounds
+
+Each round consumed the previous blind set for rule development, then measured once on a fresh independent blind set:
+
+| Classifier | Measured on (unseen) | Macro-F1 | Opt-out recall | Human-request recall | False opt-outs |
+|---|---|---|---|---|---|
+| `intent-rules-1.0` | `blind_v2` (80) | 0.736 | 8/9 | 5/10 | 0 |
+| `intent-rules-1.1` | `blind_v3` (90) | 0.788 | 10/13 | 5/13 | 1 |
+| **`intent-rules-1.2`** (frozen) | **`blind_v4` (100)** | **0.815** | **7/14** | **9/12** | **0** |
+
+- **The targets are still not met.** Each fresh set surfaces new long-tail phrasings ("Stopp", "msg bnd kro", "take us off your list"), and hand-written rules converge slowly. INTENT-08 stays **BLOCKED_QUALITY**, and the feature stays manual-review only.
+- **Rule iterations stopped at 1.2**, so the reported number is a real held-out measurement.
+- **Recommended path:** human-reviewed real (de-identified) replies, then a semantic classifier behind a real model gateway (P6.2+), measured on a fresh human-labelled blind set.

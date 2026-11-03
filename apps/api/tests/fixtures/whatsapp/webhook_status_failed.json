@@ -1,0 +1,43 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000000001",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550000000",
+              "phone_number_id": "200000000000002"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Synthetic Sender"
+                },
+                "wa_id": "920000000101"
+              }
+            ],
+            "messages": [],
+            "statuses": [
+              {
+                "id": "wamid.FIXTUREOUT00000001",
+                "status": "failed",
+                "timestamp": "1792738740",
+                "recipient_id": "920000000101",
+                "errors": [
+                  {
+                    "code": 131026,
+                    "title": "synthetic"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

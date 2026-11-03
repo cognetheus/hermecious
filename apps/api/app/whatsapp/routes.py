@@ -76,6 +76,8 @@ async def receive(request: Request, settings: AppSettings, clock: AppClock) -> R
 
     try:
         counts = await run_in_threadpool(store)
+    except inbox.BatchTooLarge:
+        return _refuse(413, "payload_invalid")
     except (OperationalError, DBAPIError, DependencyUnavailable):
         logger.warning("whatsapp.webhook_storage_unavailable")
         return _refuse(503, "storage_unavailable")  # no 2xx before a durable commit: Meta retries

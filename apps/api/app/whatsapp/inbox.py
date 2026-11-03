@@ -21,19 +21,23 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import psycopg
+import sqlalchemy.exc
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.accounts import management
+from app.accounts import service as account_service
+from app.auth.dependencies import Capability
 from app.auth.models import Role
 from app.auth.service import Actor
 from app.contacts import addresses
 from app.contacts import service as contacts
 from app.contacts.addresses import Keyring
 from app.contacts.models import Contact, SuppressionEntry
-from app.core.clock import FixedClock
-from app.core.errors import DependencyUnavailable
+from app.core.clock import Clock, FixedClock
+from app.core.errors import DependencyUnavailable, NotFound
 from app.core.settings import Settings
 from app.inbox import service as inbox
 from app.intent import service as intent
@@ -51,8 +55,10 @@ from app.whatsapp.models import (
 )
 
 logger = logging.getLogger("app.whatsapp")
+_DB_TRANSIENT = (psycopg.OperationalError, sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
 JOB_TYPE, JOB_VERSION = "provider_inbox.process", 1
 BATCH = 200
+REQUEUE_LIMIT = 1000
 _RANK = {"sent": 1, "delivered": 2, "read": 3}
 
 
@@ -76,9 +82,15 @@ def _bound(db: Session, settings: Settings, items: list[webhook.Item]) -> dict[s
     }
 
 
+class BatchTooLarge(Exception):
+    """A signed body over the per-batch item limits; refused (413) rather than partially acknowledged."""
+
+
 def receive(db: Session, *, settings: Settings, now: datetime, raw: bytes, request_id: str | None) -> dict[str, int]:
     """Persist a signature-verified body. Commits; raises on storage failure (the caller answers 5xx)."""
     parsed = webhook.parse(raw, now)
+    if parsed.quarantine_reason == webhook.TOO_MANY_ITEMS:
+        raise BatchTooLarge  # nothing stored, no 2xx: the sender must split the batch
     counts = dict(parsed.counts) | {"accepted": 0, "duplicates": 0, "unmapped": 0, "quarantined": 0}
     connections = _bound(db, settings, parsed.items)
     keys = contacts.keyring(settings) if any(i.sender_e164 for i in parsed.items) else None
@@ -135,7 +147,9 @@ def receive(db: Session, *, settings: Settings, now: datetime, raw: bytes, reque
         )  # fmt: skip
     if not counts["accepted"] and not counts["duplicates"]:
         envelope.parse_status = "quarantined"
-        envelope.quarantine_reason = parsed.quarantine_reason or ("unmapped" if counts["unmapped"] else "no_items")
+        envelope.quarantine_reason = parsed.quarantine_reason or (
+            "webhook_unmapped" if counts["unmapped"] else "no_items"
+        )
     envelope.counts_json = counts
     db.commit()  # durable before the HTTP 200
     logger.info("whatsapp.webhook_received", extra={"context": {"envelope_id": str(envelope.id), **counts}})
@@ -294,6 +308,9 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
         raise job_registry.PermanentJobError("connection_not_found")
     if inbox.purge_expired(db, org, connection_id, ctx.now):  # bounded retention of sealed text (ADR-029)
         db.commit()
+    if settings.whatsapp_inbox_paused:  # reversible stop (runbook §1): items stay pending, nothing is lost
+        logger.info("whatsapp.inbox_paused", extra={"context": {"connection_id": str(connection_id)}})
+        return {"connection_id": str(connection_id), "processed": 0, "failed": 0, "paused": True}
     keys = content.keyring(settings)
     done = failed = 0
     while done + failed < BATCH:
@@ -320,7 +337,7 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
             item.processing_status, item.processed_at, item.attempts = "processed", ctx.now, item.attempts + 1
             db.commit()  # the domain change and the processed marker, together
             done += 1
-        except DependencyUnavailable:
+        except (DependencyUnavailable, *_DB_TRANSIENT):  # deadlock, lost connection: retried, never parked
             db.rollback()
             raise job_registry.TransientJobError("storage_unavailable") from None
         except Exception:  # a poison item is parked, never retried forever and never blocking the rest
@@ -334,3 +351,40 @@ def handle(db: Session, ctx: job_registry.JobContext, payload: Any, settings: Se
             db.commit()
             failed += 1
     return {"connection_id": str(connection_id), "processed": done, "failed": failed}
+
+
+def requeue_failed(db: Session, *, actor: Actor, clock: Clock, settings: Settings) -> dict[str, int]:
+    """Owner-only: put items parked as `failed` back to `pending` and enqueue processing (bounded, audited).
+
+    Processing is idempotent per logical item, so a requeue can never duplicate a message or a side effect.
+    """
+    account_service._require(actor, Capability.ADMINISTER)
+    org = actor.organization_id
+    connection = db.scalar(select(ProviderConnection).where(ProviderConnection.organization_id == org))
+    if connection is None:
+        raise NotFound()
+    now = clock.now()
+    ids = list(
+        db.scalars(
+            select(ProviderEventItem.id)
+            .where(ProviderEventItem.organization_id == org, ProviderEventItem.provider_connection_id == connection.id,
+                   ProviderEventItem.processing_status == "failed")
+            .limit(REQUEUE_LIMIT)
+            .with_for_update()
+        )
+    )  # fmt: skip
+    if ids:
+        db.execute(
+            update(ProviderEventItem)
+            .where(ProviderEventItem.id.in_(ids))
+            .values(processing_status="pending", error_class=None)
+        )
+        job_service.enqueue_job(
+            db, organization_id=org, environment=settings.environment, job_type=JOB_TYPE, schema_version=JOB_VERSION,
+            payload={"connection_id": str(connection.id)},
+            idempotency_key=f"provider_inbox.requeue.{connection.id}.{int(now.timestamp() * 1000)}", clock=clock,
+        )  # fmt: skip
+    management._audit(db, actor, clock, "whatsapp.inbox_requeued", connection.id, {"items": len(ids)},
+                      target_type="provider_connection")  # fmt: skip
+    db.commit()
+    return {"requeued": len(ids)}

@@ -55,7 +55,7 @@ from app.whatsapp.contracts import (
     TemplateComponent,
     TemplateParameter,
 )
-from app.whatsapp.models import ProviderMessageStatus, ProviderTemplate
+from app.whatsapp.models import ProviderConnection, ProviderMessageStatus, ProviderTemplate
 
 POLICY_REVISION = "whatsapp-pilot-1.0"
 CONFIRM_LABEL = "This sends ONE REAL WhatsApp message to a real opted-in contact."
@@ -65,6 +65,8 @@ ATTEMPTED = ("reserved", "provider_accepted", "definitively_rejected", "indeterm
 STATE_OF = {"accepted": "provider_accepted", "definitive_rejected": "definitively_rejected",
             "indeterminate": "indeterminate"}  # fmt: skip
 CATEGORY_FOR = {"marketing": "MARKETING", "utility": "UTILITY"}
+# Circuit breaker (P5.5 step 5): these provider errors pause the pilot automatically; a person resumes it.
+BREAKER = ("provider_auth", "provider_quota")
 
 
 def _digest(value: Any) -> str:
@@ -292,14 +294,27 @@ def confirm(
     except IntegrityError:
         db.rollback()
         raise Conflict("another pilot send is in flight for this connection") from None
-    latest = settings()  # the global stop and the live gate are read again between reservation and the call
-    if latest.outreach_kill_switch or release.live_gate(latest) is not None:
+    # Everything that can stop unsent work is read again between the reservation and the call: the global stop, the
+    # live gate, the pilot (paused for human takeover or a quality alert, revoked, expired) and the connection.
+    latest = settings()
+    db.expire_all()
+    authorization_now = db.scalar(select(PilotAuthorization).where(PilotAuthorization.id == row.authorization_id))
+    connection_now = db.scalar(select(ProviderConnection).where(ProviderConnection.id == row.provider_connection_id))
+    if (
+        latest.outreach_kill_switch
+        or release.live_gate(latest) is not None
+        or authorization_now is None
+        or authorization_now.status != "active"
+        or clock.now() >= authorization_now.expires_at
+        or connection_now is None
+        or not connection_now.enabled
+    ):
         row = _lock(db, org, send_id)
         row.state, row.denial_reason, row.updated_at, row.version = (
             "denied", "stopped_before_send", clock.now(), row.version + 1,
         )  # fmt: skip
         db.commit()
-        raise Conflict("pilot send stopped before the network call (kill switch or live gate)")
+        raise Conflict("pilot send stopped before the network call (kill switch, live gate, pause or connection)")
     parameters = [TemplateParameter(text=p) for p in row.params_json]
     body = [TemplateComponent(type="body", parameters=parameters)] if parameters else []
     intent = SendIntent(
@@ -325,6 +340,16 @@ def confirm(
         row.error_class, row.provider_error_code = result.error_class, result.provider_error_code
     else:
         row.error_class = refused
+    if row.error_class in BREAKER:  # auth or quota trouble: stop the pilot until a person looks
+        paused = db.scalar(
+            select(PilotAuthorization).where(PilotAuthorization.id == row.authorization_id).with_for_update()
+        )
+        if paused is not None and paused.status == "active":
+            paused.status, paused.pause_reason = "paused", "provider_error"
+            paused.updated_at, paused.version = clock.now(), paused.version + 1
+            management._audit(db, actor, clock, "release.pilot_paused", paused.id,
+                              {"reason": "provider_error", "error_class": row.error_class},
+                              target_type="pilot_authorization")  # fmt: skip
     management._audit(db, actor, clock, "release.pilot_confirmed", row.id,
                       {"state": row.state, "error_class": row.error_class, "contact": contact.address_hint,
                        "template": row.template_name, "simulated_transport": row.simulated_transport},

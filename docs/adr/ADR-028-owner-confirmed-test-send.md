@@ -95,3 +95,9 @@ Observers see redacted status only and no controls. There is no "send to account
 
 - **Evidence:** WATEST-01..09 are verified offline, against Postgres and a fake Graph layer. **WATEST-10 (a real receipt) is BLOCKED_EXTERNAL** until the owner supplies Meta test credentials, a Meta test phone number and a verified test recipient, and performs the confirmation. It is never marked verified from mocks.
 - **Rollback:** set `HERMECIOUS_WHATSAPP_TEST_OUTBOUND_ENABLED=false`, which denies confirms immediately, or switch the mode back to `simulation`. Migration 0022 is additive and downgrades cleanly.
+
+## Amendment (2026-11-03, audit)
+
+- **Evidence flag:** each test send records `simulated_transport` (true unless the pinned real Graph client made the call; existing rows default to true). The P5.5 readiness check counts only real sends as WATEST-10 evidence, so a contract-test fake plus a synthetic webhook can never pass.
+- **Collisions:** a contact can no longer be created on an active test recipient's number (P5.4: a test phone is never a prospect). A contact that already exists, for example from an import, is still denied at confirmation (`recipient_is_sourced_contact`).
+- **Reservation:** the in-flight uniqueness check and the P5.4 thread update commit together, so a concurrent confirmation returns 409 rather than 500.

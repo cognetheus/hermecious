@@ -25,7 +25,13 @@ Nothing to configure. `HERMECIOUS_WHATSAPP_MODE=simulation` refuses every Meta I
    - a `STOP` creates a suppression;
    - nothing replies.
 
-**Stop:** unsubscribe at Meta, or unset `HERMECIOUS_WHATSAPP_APP_SECRET` (POST → 503). Keep the stored evidence.
+**Stop or roll back:**
+- **Pause processing:** set `HERMECIOUS_WHATSAPP_INBOX_PAUSED=true` and restart the worker. Signed deliveries are still verified and stored, and stay `pending`. Set it back to `false` to resume; the next delivery, or a requeue, processes the backlog.
+- **Replay parked items:** items parked as `failed` (a poison payload) are replayed by an owner with `POST /api/v1/integrations/whatsapp/inbox/requeue`. It is bounded and audited, and processing is idempotent, so nothing is duplicated. Transient database errors (deadlock, lost connection) are retried automatically and never parked.
+- **Refuse all deliveries:** unsubscribe at Meta, or unset `HERMECIOUS_WHATSAPP_APP_SECRET` (POST → 503, so Meta retries later).
+- **Oversized batches:** a batch over the per-delivery limits (50 entries, 50 changes, 100 items per change) is refused with 413 and nothing is stored. It is never acknowledged and silently truncated.
+
+Keep the stored evidence in every case.
 
 ## 2. One real test send (P5.3, ADR-028)
 

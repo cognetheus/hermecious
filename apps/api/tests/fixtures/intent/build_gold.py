@@ -298,10 +298,22 @@ BLIND: dict[str, dict[str, Any]] = {
     },
     "blind_v2.jsonl": {
         "provenance": "written blind (guidelines only) by a second independent agent; NOT human-reviewed",
-        "role": "the held-out measurement for intent-rules-1.0: macro-F1 0.7364, accuracy 0.725, safety recall "
-        "13/19 (opt-out 8/9, human request 5/10), 0 false opt-outs -> BLOCKED_QUALITY. Two spelling "
-        "fixes were made after this measurement; they are not validated by it",
+        "role": "consumed: the held-out measurement for intent-rules-1.0 (macro-F1 0.7364, accuracy 0.725, "
+        "safety recall 13/19, 0 false opt-outs -> BLOCKED_QUALITY), then used for rule development of "
+        "intent-rules-1.1; no longer a held-out measure",
         "measured": {"macro_f1": 0.7364, "accuracy": 0.725, "safety_misses": 6, "false_explicit_opt_out": 0},
+    },
+    "blind_v3.jsonl": {
+        "provenance": "written blind (guidelines only) by a third independent agent; NOT human-reviewed",
+        "role": "consumed: the held-out measurement for intent-rules-1.1 (macro-F1 0.7881, safety recall 15/26, "
+        "1 false opt-out -> BLOCKED_QUALITY), then used for rule development of intent-rules-1.2",
+        "measured": {"macro_f1": 0.7881, "accuracy": 0.7444, "safety_misses": 11, "false_explicit_opt_out": 1},
+    },
+    "blind_v4.jsonl": {
+        "provenance": "written blind (guidelines only) by a fourth independent agent; NOT human-reviewed",
+        "role": "the held-out measurement for intent-rules-1.2 (frozen): macro-F1 0.8149, accuracy 0.78, safety "
+        "recall 16/26 (opt-out 7/14, human request 9/12), 0 false opt-outs -> BLOCKED_QUALITY",
+        "measured": {"macro_f1": 0.8149, "accuracy": 0.78, "safety_misses": 10, "false_explicit_opt_out": 0},
     },
 }
 
@@ -321,7 +333,7 @@ def manifest(gold_text: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         raw = (HERE / name).read_bytes()
         datasets[name] = {"sha256": hashlib.sha256(raw).hexdigest(),
                           "items": sum(1 for line in raw.splitlines() if line.strip()), **meta}  # fmt: skip
-    return {"classifier_version": "intent-rules-1.0", "datasets": datasets, "human_review": None,
+    return {"classifier_version": "intent-rules-1.2", "datasets": datasets, "human_review": None,
             "promotion": "blocked_quality"}  # fmt: skip
 
 

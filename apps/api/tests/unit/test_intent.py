@@ -155,7 +155,7 @@ def test_intent_07_gold_set_size_languages_cluster_split_and_hash() -> None:
     heldout = {r["cluster"] for r in rows if r["split"] == "heldout"}
     assert heldout and not dev & heldout  # split by paraphrase cluster: no leakage across the split
     assert {r["primary"] for r in rows} == set(INTENTS)
-    for name in ("blind_v1.jsonl", "blind_v2.jsonl"):
+    for name in ("blind_v1.jsonl", "blind_v2.jsonl", "blind_v3.jsonl", "blind_v4.jsonl"):
         blind = gold(name)
         assert {r["primary"] for r in blind} == set(INTENTS) and all(r["split"] == "blind" for r in blind)
     # Provenance is stated, not assumed: no label has been reviewed by a human yet, so promotion stays blocked.
@@ -174,12 +174,12 @@ def test_intent_08_measured_targets_on_the_held_out_split_and_safety_suite() -> 
         assert split["false_explicit_opt_out"] == []
     assert report["classifier_version"] == CLASSIFIER_VERSION
     # The independent blind set is the generalization measure. It missed the targets, and the record says so.
-    measured = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))["datasets"]["blind_v2.jsonl"]
+    measured = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))["datasets"]["blind_v4.jsonl"]
     assert measured["measured"]["macro_f1"] < evaluate.TARGET_MACRO_F1 and measured["measured"]["safety_misses"] > 0
 
 
 def test_intent_08_no_blind_message_is_ever_falsely_marked_as_an_opt_out() -> None:
-    for name in ("blind_v1.jsonl", "blind_v2.jsonl"):
+    for name in ("blind_v1.jsonl", "blind_v2.jsonl", "blind_v3.jsonl", "blind_v4.jsonl"):
         for r in gold(name):
             if "explicit_opt_out" not in r["flags"]:
                 assert "explicit_opt_out" not in classify(r["text"]).flags, (name, r["id"])

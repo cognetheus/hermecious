@@ -109,3 +109,8 @@ The pilot's own mechanics are tested through one narrow, documented test seam th
   - set `HERMECIOUS_OUTREACH_KILL_SWITCH=true` or `HERMECIOUS_LIVE_OUTBOUND_ENABLED=false`.
 
   Meta cannot recall a message it has already accepted. Migration 0024 is additive.
+
+## Amendment (2026-11-03, audit)
+
+- **Between the reservation and the call**, the pilot re-reads the global stop, the live gate, **the pilot authorization** (paused for human takeover or a quality alert, revoked, expired) and **the connection** (disabled). Any change ends the attempt as `stopped_before_send`.
+- **Circuit breaker:** a `provider_auth` or `provider_quota` outcome automatically pauses the pilot (`pause_reason: provider_error`). Nothing more reaches Meta until an owner resumes it.

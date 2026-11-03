@@ -1,5 +1,5 @@
 {
-  "classifier_version": "intent-rules-1.0",
+  "classifier_version": "intent-rules-1.2",
   "datasets": {
     "gold_v1.jsonl": {
       "sha256": "bb457e9bee6db8ffbc6b21e589d201c025532a262da27b8bee313e3f7924e24e",
@@ -28,11 +28,35 @@
       "sha256": "26e29cdc18764b8cb853e744277bb9d4f1f431abfbfe43f551ee8837861cb7b7",
       "items": 80,
       "provenance": "written blind (guidelines only) by a second independent agent; NOT human-reviewed",
-      "role": "the held-out measurement for intent-rules-1.0: macro-F1 0.7364, accuracy 0.725, safety recall 13/19 (opt-out 8/9, human request 5/10), 0 false opt-outs -> BLOCKED_QUALITY. Two spelling fixes were made after this measurement; they are not validated by it",
+      "role": "consumed: the held-out measurement for intent-rules-1.0 (macro-F1 0.7364, accuracy 0.725, safety recall 13/19, 0 false opt-outs -> BLOCKED_QUALITY), then used for rule development of intent-rules-1.1; no longer a held-out measure",
       "measured": {
         "macro_f1": 0.7364,
         "accuracy": 0.725,
         "safety_misses": 6,
+        "false_explicit_opt_out": 0
+      }
+    },
+    "blind_v3.jsonl": {
+      "sha256": "1c83dc9bd16073018bd6cc67e269e03558e3df6c14dcac3b49ae20b4391ba666",
+      "items": 90,
+      "provenance": "written blind (guidelines only) by a third independent agent; NOT human-reviewed",
+      "role": "consumed: the held-out measurement for intent-rules-1.1 (macro-F1 0.7881, safety recall 15/26, 1 false opt-out -> BLOCKED_QUALITY), then used for rule development of intent-rules-1.2",
+      "measured": {
+        "macro_f1": 0.7881,
+        "accuracy": 0.7444,
+        "safety_misses": 11,
+        "false_explicit_opt_out": 1
+      }
+    },
+    "blind_v4.jsonl": {
+      "sha256": "585837fc075b0c22997c212d1aea7bf6177492f730ff96cc2cc5d69c27266959",
+      "items": 100,
+      "provenance": "written blind (guidelines only) by a fourth independent agent; NOT human-reviewed",
+      "role": "the held-out measurement for intent-rules-1.2 (frozen): macro-F1 0.8149, accuracy 0.78, safety recall 16/26 (opt-out 7/14, human request 9/12), 0 false opt-outs -> BLOCKED_QUALITY",
+      "measured": {
+        "macro_f1": 0.8149,
+        "accuracy": 0.78,
+        "safety_misses": 10,
         "false_explicit_opt_out": 0
       }
     }

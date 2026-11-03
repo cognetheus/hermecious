@@ -157,7 +157,7 @@ def test_inbox_01_verified_inbound_becomes_one_thread_without_enrollment(
 
 
 def test_inbox_02_duplicates_and_racing_first_arrivals_create_one_thread(
-    app: FastAPI, client: TestClient, org: Org, operator: str
+    app: FastAPI, client: TestClient, org: Org, operator: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     inbound(client, "wamid.SYNINBOX0201")
     inbound(client, "wamid.SYNINBOX0201")  # same envelope again
@@ -165,17 +165,30 @@ def test_inbox_02_duplicates_and_racing_first_arrivals_create_one_thread(
                                       message("wamid.SYNINBOX0202", sender=STRANGER))))  # fmt: skip
     assert post(client, batch).json()["accepted"] == 1  # different envelope, same provider message id
     outcomes: list[str] = []
-    barrier = threading.Barrier(2)
+    barrier, inside = threading.Barrier(2), threading.Barrier(2)
+    real_touch, touched_by = inbox.touch, set[int]()
+
+    def together(*args: Any, **kwargs: Any) -> None:  # both workers are inside the thread upsert at once
+        if len(touched_by) < 2:
+            touched_by.add(threading.get_ident())
+            inside.wait(timeout=20)
+        real_touch(*args, **kwargs)
+
+    monkeypatch.setattr(inbox, "touch", together)
 
     def race(name: str) -> None:
+        one_job = worker(app, name)
+        one_job.batch = 1  # each worker claims one job, so both are inside processing at once
         barrier.wait(timeout=10)
-        outcomes.extend(o.status for o in worker(app, name).run_once())
+        outcomes.extend(o.status for o in one_job.run_once())
 
     workers = [threading.Thread(target=race, args=(f"worker-{i}",)) for i in range(2)]
     for t in workers:
         t.start()
     for t in workers:
         t.join(timeout=60)
+    assert len(touched_by) == 2 and not inside.broken  # two workers really raced on the first contact
+    monkeypatch.setattr(inbox, "touch", real_touch)
     drain(app)
     thread = only_thread(client)
     assert thread["unread"] == 2 and len(detail(client, thread["id"])["entries"]) == 2
@@ -215,11 +228,12 @@ def test_inbox_03_08_test_send_statuses_reconcile_and_are_never_a_prospect(
     assert [s["status"] for s in first["statuses"]] == ["sent", "delivered", "read", "failed"]  # provider order
     assert unknown["delivery"] == {"status": "accepted_unknown_delivery", "conflict": None} and not unknown["statuses"]
     assert reply["text"] == "Received, thanks"
-    # A sourced contact later created with the test number does not turn the test thread into a prospect.
+    # A registered test phone can never be mapped to a school prospect: creating such a contact is refused.
     school = plain_account(app, org, "Test Number Collision School (Synthetic)")
-    assert add_contact(client, flow.operator, school, TEST_NUMBER).status_code == 201
+    refused = add_contact(client, flow.operator, school, TEST_NUMBER)
+    assert refused.status_code == 409 and "test recipient" in refused.json()["error"]["message"]
     party = only_thread(client)["party"]
-    assert (party["type"], party["conflict"]) == ("test_recipient", "matches_sourced_contact")
+    assert (party["type"], party["conflict"]) == ("test_recipient", None)
 
 
 # --- INBOX-04 ------------------------------------------------------------------------------------------------------
@@ -241,9 +255,10 @@ def test_inbox_04_crash_rollback_and_repeated_rebuild_keep_the_same_timeline(
     drain(app)  # every item fails inside its transaction: nothing half-applied
     with db(app) as session:
         assert session.scalar(select(func.count()).select_from(InboxThread)) == 0
-        session.execute(text("UPDATE provider_event_items SET processing_status = 'pending', error_class = NULL"))
-        session.commit()  # the operator re-queues the parked items (replay)
     monkeypatch.setattr(inbox, "touch", real_touch)
+    owner_client, csrf = owner  # the supported replay: the owner re-queues the parked items
+    requeue = owner_client.post("/api/v1/integrations/whatsapp/inbox/requeue", headers=mutation_headers(csrf))
+    assert requeue.json() == {"requeued": 3}
     post(client, envelope(change(messages=(message("wamid.SYNINBOX0409", sender=STRANGER),))))  # wakes the runner
     drain(app)
     before, snapshot_without_versions = snapshot(app), snapshot(app, versions=False)
@@ -457,3 +472,27 @@ def test_inbox_10_no_reply_send_or_enrollment_surface_exists(app: FastAPI, clien
     ]  # fmt: skip
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "reply", "dispatch"))]
     assert PHONE  # the bound test phone; the inbox has no route that takes a number
+
+
+def test_inbox_05_two_tenants_with_the_same_sender_digest_and_message_id_never_collide(
+    app: FastAPI, client: TestClient, org: Org, operator: str
+) -> None:
+    inbound(client, "wamid.SYNSHARED0001", body="from the first tenant")
+    other = Org(app, "Second Tenant", prefix="s")
+    configure(app, inbound_content_secrets=CONTENT_KEY, whatsapp_phone_number_id="200000000000003")
+    with db(app) as session:
+        connections.bind_connection(session, actor=other.actor, clock=app.state.clock, settings=app.state.settings)
+    body = envelope(change(messages=(message("wamid.SYNSHARED0001", sender=STRANGER, text="from the second"),),
+                           phone="200000000000003"))  # fmt: skip
+    assert post(client, body).json()["accepted"] == 1  # same wamid and sender, another connection
+    drain(app)
+    with db(app) as session:
+        rows = session.execute(text("SELECT organization_id, party_digest FROM inbox_threads")).all()
+    assert len(rows) == 2 and rows[0].party_digest == rows[1].party_digest and rows[0][0] != rows[1][0]
+    (mine,) = threads(client).json()["items"]
+    assert [e["text"] for e in detail(client, mine["id"])["entries"]] == ["from the first tenant"]
+    theirs = TestClient(app, raise_server_exceptions=False)
+    logged_in(theirs, "operator@s.example")
+    (second,) = threads(theirs).json()["items"]
+    assert [e["text"] for e in detail(theirs, second["id"])["entries"]] == ["from the second"]
+    assert theirs.get(f"{API}/threads/{mine['id']}").status_code == 404

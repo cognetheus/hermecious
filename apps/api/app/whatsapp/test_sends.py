@@ -43,6 +43,7 @@ from app.contacts import service as contacts
 from app.contacts.models import Contact, SuppressionEntry
 from app.core.clock import BUSINESS_TZ, Clock
 from app.core.errors import Conflict, DependencyUnavailable, Forbidden, NotFound, Unprocessable
+from app.core.request_context import current_request_id
 from app.core.settings import Settings
 from app.inbox import service as inbox
 from app.whatsapp import service as connections
@@ -51,6 +52,7 @@ from app.whatsapp.config import test_recipient_numbers
 from app.whatsapp.contracts import (
     OutboundKind,
     ProviderConnectionView,
+    ProviderError,
     ResolvedRecipient,
     SendIntent,
     TemplateComponent,
@@ -98,9 +100,11 @@ def _transport(
 
 
 def _provider_error(exc: wa.ProviderCallError) -> Exception:
-    if exc.error_class in ("provider_transient", "provider_quota", "provider_uncertain"):
-        return DependencyUnavailable(f"WhatsApp provider unavailable ({exc.error_class})")
-    return Conflict(f"WhatsApp provider refused the request ({exc.error_class})")
+    """Batch 08 §4: a safe public code and status from the taxonomy; never the provider's own message."""
+    error = ProviderError.of(exc.error_class, current_request_id())
+    if error.http_status == 503:
+        return DependencyUnavailable(f"WhatsApp provider unavailable ({error.public_code})")
+    return Conflict(f"WhatsApp provider refused the request ({error.public_code})")
 
 
 # --- template catalog --------------------------------------------------------------------------------------------
@@ -484,13 +488,14 @@ def confirm(
     if current is None or current.provider_status != "APPROVED" or current.components_digest != row.components_digest:
         raise _deny(db, row, "template_changed", now)
     row.state, row.confirmed_by, row.confirmed_at = "reserved", actor.user_id, now
+    row.simulated_transport = not sender.real_network
     row.updated_at, row.version = now, row.version + 1
-    inbox.touch(
-        db, org=org, party=inbox.Party(connection.connection_id, recipient.key_id, recipient.address_digest,
-                                       recipient.address_hint),
-        at=now, inbound_seq=0, now=now,
-    )  # fmt: skip  # the P5.4 thread shows the attempt from the moment it is reserved
-    try:
+    try:  # the reservation, its in-flight uniqueness check and the P5.4 thread commit together
+        inbox.touch(
+            db, org=org, party=inbox.Party(connection.connection_id, recipient.key_id, recipient.address_digest,
+                                           recipient.address_hint),
+            at=now, inbound_seq=0, now=now,
+        )  # fmt: skip
         db.commit()  # reserved before any network call: a crash leaves a visible reservation, never a resend
     except IntegrityError:
         db.rollback()

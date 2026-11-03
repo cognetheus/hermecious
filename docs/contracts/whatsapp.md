@@ -130,3 +130,17 @@ All routes are under `/api/v1/release/whatsapp`. Only owners and operators can r
 |---|---|---|
 | `POST /api/v1/inbox/whatsapp/messages/{message_id}/intent-review` | owner, operator (CSRF) | `{observation_id, decision: confirmed\|corrected, corrected_primary?, note?}` → 201. A correction equal to the label → 409; an unknown label → 422; another tenant's message → 404 |
 | `POST /api/v1/inbox/whatsapp/intent/backfill` | owner | 202 `{job_id}`: the `intent.classify` job classifies signed inbound messages without an observation for the current version |
+
+## Audit additions (2026-11-03)
+
+| Route | Roles | Result |
+|---|---|---|
+| `POST /api/v1/integrations/whatsapp/inbox/requeue` | owner | `{requeued: n}`: parked (`failed`) inbound items back to `pending` (at most 1,000), plus a processing job; audited |
+
+- **Webhook:** a signed body over the item limits → **413** `payload_invalid`, nothing stored. The unmapped quarantine reason is `webhook_unmapped`.
+- **Error taxonomy:** `app/whatsapp/contracts.py` `ERROR_TAXONOMY` / `ProviderError` maps every Batch 08 §4 error class to a safe HTTP status and a retry class (`never`, `after_backoff`, `manual_investigation`). `provider_uncertain` is never retried blindly.
+- **P5.3:** test sends record `simulated_transport`. Readiness counts only real-network sends as WATEST-10 evidence.
+- **P5.5 pilot:**
+  - after the reservation it re-reads the pilot status (pause or revoke) and the connection, as well as the stop and the live gate;
+  - `provider_auth` or `provider_quota` automatically pauses the pilot (`pause_reason: provider_error`) until an owner resumes it.
+- **P4.3 contacts:** creating a contact whose number is an active WhatsApp test recipient → 409.

@@ -19,8 +19,8 @@ from app.api.dependencies import AppClock, AppSettings
 from app.auth.dependencies import CurrentActor, allow_roles, authorize_request
 from app.auth.models import Role
 from app.persistence.db import DbSession
+from app.whatsapp import inbox, test_sends
 from app.whatsapp import service as connections
-from app.whatsapp import test_sends
 
 router = APIRouter(prefix="/api/v1/integrations/whatsapp", tags=["whatsapp"], dependencies=[Depends(authorize_request)])
 NO_STORE = {"Cache-Control": "no-store"}
@@ -148,3 +148,9 @@ def cancel(send_id: uuid.UUID, actor: CurrentActor, db: DbSession, clock: AppClo
 def mark_indeterminate(send_id: uuid.UUID, actor: CurrentActor, db: DbSession, clock: AppClock) -> JSONResponse:
     row = test_sends.mark_indeterminate(db, actor=actor, clock=clock, send_id=send_id)
     return JSONResponse(test_sends.view(db, row, full=True), headers=NO_STORE)
+
+
+@router.post("/inbox/requeue")
+def requeue(actor: CurrentActor, db: DbSession, clock: AppClock, settings: AppSettings) -> JSONResponse:
+    """Owner only (P5.2): retry inbound items parked as failed. Idempotent per logical item; never sends."""
+    return JSONResponse(inbox.requeue_failed(db, actor=actor, clock=clock, settings=settings), headers=NO_STORE)

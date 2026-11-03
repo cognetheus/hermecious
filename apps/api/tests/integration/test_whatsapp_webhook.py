@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 
 from app.contacts.models import Contact, SuppressionEntry
@@ -287,14 +287,17 @@ def test_wahook_06_worker_crash_and_racing_workers_project_exactly_once(
     barrier = threading.Barrier(2)
 
     def race(name: str) -> None:
+        one_job = worker(app, name)
+        one_job.batch = 1  # each worker claims its own job: both really run at the same time
         barrier.wait(timeout=10)
-        outcomes.extend(o.status for o in worker(app, name).run_once())
+        outcomes.extend(o.status for o in one_job.run_once())
 
     threads = [threading.Thread(target=race, args=(f"worker-{i}",)) for i in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=60)
+    assert len(outcomes) == 2  # both workers claimed and ran a job concurrently
     drain(app)
     assert count(app, ProviderInboundMessage) == 6 and count(app, ProviderEventItem, processing_status="processed") == 6
 
@@ -355,7 +358,7 @@ def test_wahook_08_wrong_binding_shape_size_and_type_are_contained(app: FastAPI,
             ProviderWebhookEnvelope.parse_status == "quarantined")))  # fmt: skip
         sticker = session.scalar(select(ProviderInboundMessage))
         orgs = set(session.scalars(select(ProviderEventItem.organization_id)))
-    assert {"unmapped", "object_unsupported", "payload_invalid"} <= set(quarantined)
+    assert {"webhook_unmapped", "object_unsupported", "payload_invalid"} <= set(quarantined)
     assert count(app, ProviderEventItem, processing_status="quarantined") == 1  # the account_update change
     assert sticker is not None and sticker.kind == "unsupported"
     assert orgs == {org.id}  # nothing ever attached to the other organization
@@ -430,3 +433,118 @@ def test_wahook_10_constant_time_safe_logs_bounded_latency_and_zero_outbound(
         stored = json.dumps([i.normalized_json for i in session.scalars(select(ProviderEventItem))])
     assert job_types == {"provider_inbox.process"}  # the only job: inbound processing, never a send
     assert "secret school detail" not in stored and STRANGER not in stored  # no body text, no raw number
+
+
+# --- audit additions -----------------------------------------------------------------------------------------------
+
+
+def test_wahook_09_invalid_and_stale_timestamps_are_quarantined_and_unknown_status_never_regresses(
+    app: FastAPI, client: TestClient, org: Org
+) -> None:
+    bad = message("wamid.SYNTS0000001")
+    bad["timestamp"] = "not-a-time"
+    stale = message("wamid.SYNTS0000002", minutes_ago=9 * 24 * 60)  # older than Meta's 7-day retry window
+    post(client, envelope(change(messages=(bad, stale))))
+    post(client, envelope(change(statuses=(status("wamid.SYNOUT0000090", "delivered", 2),))))
+    weird = status("wamid.SYNOUT0000090", "delivered", 1)
+    weird["status"] = "deleted"  # a status this version does not know
+    post(client, envelope(change(statuses=(weird,))))
+    drain(app)
+    with db(app) as session:
+        reasons = sorted(str(r) for r in session.scalars(select(ProviderEventItem.error_class).where(
+            ProviderEventItem.processing_status == "quarantined")))  # fmt: skip
+        projection = session.scalar(select(ProviderMessageStatus.status))
+    assert reasons == ["timestamp_invalid", "timestamp_stale"]
+    assert count(app, ProviderInboundMessage) == 0 and projection == "delivered"  # unknown never downgrades
+
+
+def test_wahook_08_an_oversized_batch_is_refused_whole_never_acknowledged_and_truncated(
+    app: FastAPI, client: TestClient, org: Org
+) -> None:
+    many = tuple(message(f"wamid.SYNBIG{n:06d}") for n in range(101))  # over the per-change item limit
+    assert post(client, envelope(change(messages=many))).status_code == 413
+    entries = {"object": "whatsapp_business_account",
+               "entry": [{"id": WABA, "changes": [change()]} for _ in range(51)]}  # fmt: skip
+    assert post(client, entries).status_code == 413
+    assert (count(app, ProviderWebhookEnvelope), count(app, ProviderEventItem)) == (0, 0)  # nothing stored
+
+
+def test_wahook_10_a_burst_of_signed_deliveries_is_stored_once_each_within_bounds(
+    app: FastAPI, client: TestClient, org: Org
+) -> None:
+    timings: list[float] = []
+
+    def deliver(n: int) -> None:
+        local = TestClient(app, raise_server_exceptions=False)
+        started = time.perf_counter()
+        assert post(local, envelope(change(messages=(message(f"wamid.SYNBURST{n:04d}", sender=STRANGER),)))
+                    ).status_code == 200  # fmt: skip
+        timings.append(time.perf_counter() - started)
+
+    workers = [threading.Thread(target=deliver, args=(n,)) for n in range(40)]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join(timeout=60)
+    assert len(timings) == 40 and max(timings) < 10.0 and sorted(timings)[int(0.95 * 40) - 1] < 5.0
+    drain(app)
+    assert (
+        count(app, ProviderInboundMessage) == 40 and count(app, ProviderEventItem, processing_status="processed") == 40
+    )
+
+
+def test_wahook_06_a_deadlock_is_retried_and_a_pause_or_requeue_loses_nothing(
+    app: FastAPI, client: TestClient, org: Org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy.exc import OperationalError as SAOperationalError  # noqa: PLC0415
+
+    post(client, envelope(change(messages=(message("wamid.SYNPAUSE0001", sender=STRANGER),))))
+    monkeypatch.setenv("HERMECIOUS_WHATSAPP_INBOX_PAUSED", "true")  # the worker reads its own settings
+    drain(app)
+    assert count(app, ProviderEventItem, processing_status="pending") == 1  # paused: stored, not processed
+    monkeypatch.delenv("HERMECIOUS_WHATSAPP_INBOX_PAUSED")
+    real_inbound = inbox._inbound
+
+    def deadlock(*args: Any) -> None:
+        raise SAOperationalError("UPDATE", {}, Exception("deadlock detected"))
+
+    monkeypatch.setattr(inbox, "_inbound", deadlock)
+    post(client, envelope(change(messages=(message("wamid.SYNPAUSE0002", sender=STRANGER),))))
+    assert "retry_wait" in [o.status for o in worker(app).run_once()]  # transient: retried, never parked
+    assert count(app, ProviderEventItem, processing_status="failed") == 0
+    monkeypatch.setattr(inbox, "_inbound", real_inbound)
+    with db(app) as session:  # a genuinely poisoned item was parked earlier
+        session.execute(text("UPDATE provider_event_items SET processing_status = 'failed', error_class = 'unknown'"
+                             " WHERE provider_message_id = 'wamid.SYNPAUSE0001'"))  # fmt: skip
+        session.commit()
+    owner = TestClient(app, raise_server_exceptions=False)
+    csrf = logged_in(owner, "owner@r.example")
+    url = "/api/v1/integrations/whatsapp/inbox/requeue"
+    operator = TestClient(app, raise_server_exceptions=False)
+    assert operator.post(url, headers=mutation_headers(logged_in(operator, "operator@r.example"))).status_code == 403
+    assert owner.post(url, headers=mutation_headers(csrf)).json() == {"requeued": 1}
+    app.state.clock.advance(timedelta(minutes=5))
+    drain(app)
+    assert count(app, ProviderInboundMessage) == 2 and count(app, ProviderEventItem, processing_status="processed") == 2
+
+
+def test_wahook_fixture_files_parse_as_specified(app: FastAPI, client: TestClient, org: Org) -> None:
+    fixtures = Path(__file__).parents[1] / "fixtures" / "whatsapp"
+    challenge = (fixtures / "webhook_get_challenge.txt").read_text().strip()
+    app.state.settings = app.state.settings.model_copy(update={"whatsapp_verify_token": SecretStr(VERIFY)})
+    ok = client.get(URL, params={"hub.mode": "subscribe", "hub.verify_token": VERIFY, "hub.challenge": challenge})
+    assert ok.text == challenge
+    for name in ("webhook_inbound_text.json", "webhook_status_sent.json", "webhook_status_read.json",
+                 "webhook_status_delivered.json", "webhook_status_failed.json", "webhook_batch_mixed.json",
+                 "webhook_wrong_waba.json"):  # fmt: skip
+        assert post(client, (fixtures / name).read_bytes()).status_code == 200, name
+    drain(app)
+    with db(app) as session:
+        projection = session.scalar(select(ProviderMessageStatus).where(
+            ProviderMessageStatus.provider_message_id == "wamid.FIXTUREOUT00000001"))  # fmt: skip
+        quarantined = set(session.scalars(select(ProviderWebhookEnvelope.quarantine_reason)))
+    assert count(app, ProviderInboundMessage) == 2  # the text message and the mixed batch's own-phone message
+    assert projection is not None and (projection.status, projection.conflict_reason) == (
+        "read", "failed_after_delivered",
+    )  # fmt: skip
+    assert "webhook_unmapped" in quarantined  # the wrong-WABA delivery stored no tenant data

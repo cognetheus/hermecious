@@ -247,6 +247,18 @@ def create_contact(
         )
         if clash is not None:
             raise Conflict("this number is already a contact in your organization")
+        from app.whatsapp.models import ProviderTestRecipient  # noqa: PLC0415  # avoids an import cycle
+
+        test_number = db.scalar(
+            select(ProviderTestRecipient.id).where(
+                ProviderTestRecipient.organization_id == org, ProviderTestRecipient.status == "active",
+                func.concat(ProviderTestRecipient.key_id, ":", ProviderTestRecipient.address_digest).in_(
+                    [f"{k}:{d}" for k, d in every.items()]
+                ),
+            )
+        )  # fmt: skip
+        if test_number is not None:  # P5.4: a WhatsApp test phone is never mapped to a school prospect
+            raise Conflict("this number is a registered WhatsApp test recipient; revoke it there first")
         now = clock.now()
         contact = Contact(
             organization_id=org,

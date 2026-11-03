@@ -90,6 +90,12 @@ def test_intent_04_only_signed_inbound_text_is_classified_and_other_orgs_are_ref
     observer_csrf = logged_in(observer, "observer@r.example")
     assert observer.post(f"{API}/messages/{media['id']}/intent-review", json=body,
                          headers=mutation_headers(observer_csrf)).status_code == 403  # fmt: skip
+    with db(app) as session:  # an expired or revoked session reaches neither the timeline nor the review
+        session.execute(text("UPDATE auth_sessions SET revoked_at = now()"))
+        session.commit()
+    assert client.get(f"{API}/threads").status_code == 401
+    assert client.post(f"{API}/messages/{media['id']}/intent-review", json=body,
+                       headers=mutation_headers(operator)).status_code == 401  # fmt: skip
 
 
 # --- INTENT-05 -----------------------------------------------------------------------------------------------------
@@ -141,7 +147,7 @@ def test_intent_06_versioned_append_only_and_idempotent(
     drain(app)
     with db(app) as session:
         versions = sorted(session.scalars(select(IntentObservationRow.classifier_version)))
-        assert versions == ["intent-rules-1.0", "intent-rules-9.9"]  # appended, the original untouched
+        assert versions == ["intent-rules-1.2", "intent-rules-9.9"]  # appended, the original untouched
     with db(app) as session, pytest.raises(DBAPIError):
         session.execute(text("UPDATE intent_observations SET primary_intent = 'interested'"))
         session.commit()
@@ -158,7 +164,7 @@ def test_intent_09_operator_review_is_separate_audited_and_changes_nothing_else(
     (entry,) = entries(client)
     observation = entry["intent"]
     assert (observation["primary_intent"], observation["classifier_version"], observation["model_version"]) == (
-        "objection", "intent-rules-1.0", None,
+        "objection", "intent-rules-1.2", None,
     )  # fmt: skip
     assert observation["evidence"] and observation["evidence"][0]["text"] == "pehle se"
     url = f"{API}/messages/{entry['id']}/intent-review"

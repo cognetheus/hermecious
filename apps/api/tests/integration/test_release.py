@@ -65,13 +65,14 @@ class Graph:
         self.sends: list[tuple[int, bytes] | Exception] = []
         self.calls: list[dict[str, Any]] = []
         self.during_catalog: Any = None
+        self.catalog_error: tuple[int, bytes] | None = None
 
     def request_json(self, method: str, url: str, *, body: Any = None, query: Any = None, bearer: Any = None) -> Any:
         self.calls.append({"method": method, "url": url, "body": body})
         if method == "GET":
             if self.during_catalog is not None:
                 self.during_catalog()
-            return 200, self.page
+            return self.catalog_error or (200, self.page)
         reply = self.sends.pop(0) if self.sends else (200, json.dumps({
             "messaging_product": "whatsapp", "contacts": [{"input": DIGITS, "wa_id": DIGITS}],
             "messages": [{"id": f"wamid.SYNPILOT{len(self.posts()):04d}", "message_status": "accepted"}],
@@ -615,3 +616,187 @@ def test_release_10_every_automated_send_was_fake_and_nothing_can_reach_meta(
             text("SELECT count(*) FROM action_audits WHERE action_type = 'release.pilot_confirmed'")
         )
     assert audits == 1
+
+
+# --- audit additions -----------------------------------------------------------------------------------------------
+
+
+def stop_from_the_contact(app: FastAPI, world: World) -> None:
+    stop = envelope(change(messages=(message("wamid.SYNPILOTSTOP2", sender=DIGITS, text="STOP", minutes_ago=0.1),)))
+    assert webhook(world.client, stop).status_code == 200
+    drain(app)
+
+
+def test_release_04_the_contact_opts_out_between_preview_and_confirm(app: FastAPI, world: World) -> None:
+    world.authorize()
+    world.go_live()
+    p = world.preview().json()
+    stop_from_the_contact(app, world)  # an authenticated STOP from this exact contact, after the preview
+    refused = world.confirm(p)
+    assert refused.status_code == 409 and "pilot send denied" in refused.json()["error"]["message"]
+    assert world.graph.posts() == [] and sends(app)[-1].state == "denied"
+
+
+@pytest.mark.parametrize("change_during_check", ["human_takeover", "revoke", "connection_disabled"])
+def test_release_09_a_pause_revocation_or_disabled_connection_during_the_meta_check_stops_the_send(
+    app: FastAPI, world: World, change_during_check: str
+) -> None:
+    auth = world.authorize()
+    world.go_live()
+    p = world.preview().json()
+
+    def change() -> None:  # lands after every pre-check, while Meta's catalog is being re-read
+        with db(app) as session:
+            if change_during_check == "connection_disabled":
+                session.execute(text("UPDATE provider_connections SET enabled = false"))
+            else:
+                status_ = "paused" if change_during_check == "human_takeover" else "revoked"
+                session.execute(text("UPDATE pilot_authorizations SET status = :s, pause_reason = :r WHERE id = :i"),
+                                {"s": status_, "r": "human_takeover" if status_ == "paused" else None,
+                                 "i": auth["id"]})  # fmt: skip
+            session.commit()
+
+    world.graph.during_catalog = change
+    stopped = world.confirm(p)
+    assert stopped.status_code == 409 and "stopped before the network call" in stopped.json()["error"]["message"]
+    assert world.graph.posts() == [] and sends(app)[-1].denial_reason == "stopped_before_send"
+
+
+def test_release_07_the_number_and_token_never_reach_logs_storage_or_exports(
+    app: FastAPI, world: World, json_logs: Any
+) -> None:
+    world.authorize()
+    world.go_live()
+    assert world.confirm(world.preview().json()).json()["state"] == "provider_accepted"
+    readiness_page = world.client.get(f"{API}/readiness").text
+    logged = json.dumps(json_logs(), default=str)
+    with db(app) as session:
+        stored = json.dumps([list(r) for r in session.execute(text(
+            "SELECT row_to_json(p)::text FROM pilot_sends p UNION ALL SELECT row_to_json(a)::text FROM action_audits a"
+            " UNION ALL SELECT row_to_json(r)::text FROM readiness_assessments r"))], default=str)  # fmt: skip
+    for secret in (NUMBER, DIGITS, TOKEN, SECRET):
+        assert secret not in logged and secret not in stored and secret not in readiness_page, secret
+
+
+@pytest.mark.parametrize("what_changes", ["build", "rebinding", "callbacks_stop", "offer"])
+def test_release_02_build_binding_callbacks_or_offer_changes_invalidate_the_pilot(
+    app: FastAPI, world: World, what_changes: str
+) -> None:
+    world.authorize()
+    world.go_live()
+    p = world.preview().json()
+    if what_changes == "build":
+        world.go_live(build_sha="fedcba9")  # a new deployment
+    elif what_changes == "rebinding":
+        with db(app) as session:
+            session.execute(text("UPDATE provider_connections SET version = version + 1"))
+            session.commit()
+    elif what_changes == "callbacks_stop":
+        with db(app) as session:  # no signed callback for 8 days
+            session.execute(text("UPDATE provider_event_items SET created_at = created_at - interval '8 days'"))
+            session.commit()
+    else:
+        new_offer_revision(app, world)
+    assert denied(world.confirm(p), "readiness_invalidated") and world.graph.posts() == []
+
+
+def new_offer_revision(app: FastAPI, world: World) -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.offers import schemas  # noqa: PLC0415
+    from app.offers import service as offer_service  # noqa: PLC0415
+    from app.offers.models import Offer  # noqa: PLC0415
+
+    evidence = schemas.EvidenceReference(ref="internal-demo:admissions-2026-11", type="internal-demo",
+                                         recorded_at=datetime(2026, 10, 2, tzinfo=UTC),
+                                         description="Second internal demo")  # fmt: skip
+    content = schemas.RevisionContent(
+        capability_version="caps-2026-11",
+        capability_matrix=[schemas.CapabilityClaim(capability_code="admissions_intake", summary="admissions intake",
+                                                   readiness="available", approved_for_sales=True,
+                                                   evidence_refs=[evidence.ref], approval_note="Re-reviewed")],
+        evidence_references=[evidence],
+    )  # fmt: skip
+    with db(app) as session:
+        offer = session.get(Offer, world.offer)
+        assert offer is not None
+        revision = offer_service.create_revision(
+            session,
+            actor=world.team.actor,
+            clock=app.state.clock,
+            offer_id=offer.id,
+            expected_version=offer.version,
+            content=content,
+        )
+        session.refresh(offer)
+        offer_service.publish(session, actor=world.team.actor, clock=app.state.clock, offer_id=offer.id,
+                              revision_number=revision.revision, expected_version=offer.version)  # fmt: skip
+
+
+def test_release_04_no_opt_in_another_purpose_or_another_waba_never_reach_meta(app: FastAPI, world: World) -> None:
+    listing = add_contact(world.client, world.operator, world.account, "+920000000304").json()["id"]  # public phone
+    utility = add_contact(world.client, world.operator, world.account, "+920000000305").json()["id"]
+    permission = record(world.client, world.operator, utility, purpose="utility",
+                        consent_wording_version="optin-whatsapp-utility-en-PK-v1").json()["permission_id"]  # fmt: skip
+    assert review(world.owner_client, world.owner, utility, permission).status_code == 201
+    for contact in (listing, utility):  # no marketing opt-in: content cannot even be approved for them
+        refused = world.client.post(f"/api/v1/drafts/{world.draft['id']}/approve", json={
+            "content_digest": world.draft["content_digest"], "contact_id": contact,
+            "template_ref": f"meta:{TEMPLATE_ID}", "reason": "Trying a number without marketing consent",
+            "idempotency_key": f"apr-{uuid.uuid4().hex[:12]}",
+        }, headers=mutation_headers(world.operator))  # fmt: skip
+        assert refused.status_code == 409, contact
+    world.authorize()
+    world.go_live()
+    p = world.preview().json()
+    assert denied(world.confirm(p, number="+920000000304"), "does not match the approved contact")  # typed listing #
+    world.go_live(whatsapp_waba_id="100000000000999")  # a different WABA is configured
+    assert denied(world.confirm(p), "connection_mismatch")
+    assert world.graph.posts() == []
+
+
+def test_release_08_auth_or_quota_errors_trip_the_breaker(app: FastAPI, world: World) -> None:
+    auth = world.authorize()
+    world.go_live()
+    world.graph.sends.append((429, b'{"error": {"code": 130429, "message": "rate"}}'))
+    assert world.confirm(world.preview().json()).json()["error_class"] == "provider_quota"
+    readiness = world.client.get(f"{API}/readiness").json()
+    paused = next(a for a in readiness["authorizations"] if a["id"] == auth["id"])
+    assert (paused["status"], paused["pause_reason"]) == ("paused", "provider_error")
+    assert world.preview(["Again"]).status_code == 409 and len(world.graph.posts()) == 1  # nothing more reaches Meta
+    assert world.owner_post(f"/pilot/{auth['id']}/resume").json()["status"] == "active"  # a person decides
+
+
+def test_release_03_a_failing_meta_catalog_check_never_sends(world: World) -> None:
+    world.authorize()
+    world.go_live()
+    p = world.preview().json()
+    world.graph.catalog_error = (500, b"{}")
+    assert denied(world.confirm(p), "template_check_failed_provider_transient") and world.graph.posts() == []
+
+
+def test_release_07_expired_previews_and_a_send_in_flight_never_send(app: FastAPI, world: World) -> None:
+    world.authorize()
+    world.go_live()
+    p = world.preview().json()
+    app.state.clock.advance(timedelta(minutes=11))
+    world.owner_client.cookies.clear()
+    world.owner = logged_in(world.owner_client, "owner@pl.example")
+    world.client.cookies.clear()
+    world.operator = logged_in(world.client, "operator@pl.example")
+    assert denied(world.confirm(p), "expired")
+    first, second = world.preview(["One"]).json(), world.preview(["Two"]).json()
+    with db(app) as session:
+        session.execute(text("UPDATE pilot_sends SET state = 'reserved', confirmed_by = requested_by,"
+                             " confirmed_at = updated_at WHERE id = :i"), {"i": first["id"]})  # fmt: skip
+        session.commit()
+    assert denied(world.confirm(second), "in flight") and world.graph.posts() == []
+
+
+def test_release_05_pilot_limits_are_enforced(world: World) -> None:
+    assessment = world.ready()
+    base = {"assessment_id": assessment["id"], "acknowledgement": release.PILOT_ACK, "purpose": "marketing"}
+    assert world.owner_post("/pilot", base | {"max_per_day": 4}).status_code == 422
+    assert world.owner_post("/pilot", base | {"days": 15}).status_code == 422
+    assert world.owner_post("/pilot", base).status_code == 201
+    assert world.owner_post("/pilot", base).status_code == 409  # one live pilot per connection

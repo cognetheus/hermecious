@@ -1,0 +1,102 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000000001",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550000000",
+              "phone_number_id": "200000000000002"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Synthetic Sender"
+                },
+                "wa_id": "920000000101"
+              }
+            ],
+            "messages": [
+              {
+                "from": "920000000101",
+                "id": "wamid.FIXTURE0000000002",
+                "timestamp": "1792738680",
+                "type": "text",
+                "text": {
+                  "body": "Assalam o alaikum, fees ki details bhej dein"
+                }
+              }
+            ],
+            "statuses": [
+              {
+                "id": "wamid.FIXTUREOUT00000001",
+                "status": "sent",
+                "timestamp": "1792738560",
+                "recipient_id": "920000000101"
+              }
+            ]
+          }
+        },
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550000000",
+              "phone_number_id": "200000000000999"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Synthetic Sender"
+                },
+                "wa_id": "920000000101"
+              }
+            ],
+            "messages": [
+              {
+                "from": "920000000101",
+                "id": "wamid.FIXTURE0000000003",
+                "timestamp": "1792738680",
+                "type": "text",
+                "text": {
+                  "body": "Assalam o alaikum, fees ki details bhej dein"
+                }
+              }
+            ],
+            "statuses": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "100000000000001",
+      "changes": [
+        {
+          "field": "account_update",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15550000000",
+              "phone_number_id": "200000000000002"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Synthetic Sender"
+                },
+                "wa_id": "920000000101"
+              }
+            ],
+            "messages": [],
+            "statuses": []
+          }
+        }
+      ]
+    }
+  ]
+}

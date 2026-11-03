@@ -6,6 +6,7 @@ never marketing consent.
 
 import re
 import uuid
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -139,3 +140,38 @@ ErrorClass = Literal[
     "provider_transient", "provider_uncertain", "webhook_signature", "webhook_unmapped", "payload_invalid",
     "storage_unavailable", "concurrency_conflict", "unknown",
 ]  # fmt: skip
+
+
+# Batch 08 §4 error taxonomy: every class maps to a safe public code, an HTTP status and a retry class. Provider
+# tokens, raw payloads and exception text never appear; `correlation_id` is the request id, for the audit trail.
+RetryClass = Literal["never", "after_backoff", "manual_investigation"]
+ERROR_TAXONOMY: dict[str, tuple[int, RetryClass]] = {
+    "validation": (422, "never"),
+    "authn": (401, "never"),
+    "authz": (403, "never"),
+    "policy_denied": (409, "never"),
+    "provider_bad_request": (409, "never"),
+    "provider_auth": (409, "manual_investigation"),
+    "provider_quota": (503, "after_backoff"),
+    "provider_transient": (503, "after_backoff"),
+    "provider_uncertain": (503, "manual_investigation"),  # never retried blindly: the message may have been sent
+    "webhook_signature": (401, "never"),
+    "webhook_unmapped": (200, "never"),  # signed but not ours: acknowledged, quarantined, no tenant data
+    "payload_invalid": (400, "never"),
+    "storage_unavailable": (503, "after_backoff"),
+    "concurrency_conflict": (409, "after_backoff"),
+    "unknown": (500, "manual_investigation"),
+}
+
+
+@dataclass(frozen=True)
+class ProviderError:
+    public_code: str
+    http_status: int
+    retry_class: RetryClass
+    correlation_id: str | None
+
+    @classmethod
+    def of(cls, error_class: str, correlation_id: str | None) -> "ProviderError":
+        status, retry = ERROR_TAXONOMY.get(error_class, ERROR_TAXONOMY["unknown"])
+        return cls(error_class if error_class in ERROR_TAXONOMY else "unknown", status, retry, correlation_id)

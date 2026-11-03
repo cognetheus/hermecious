@@ -17,6 +17,9 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
 
+from app.contacts import addresses
+from app.contacts import service as contacts_service
+from app.contacts.models import Contact
 from app.egress.https_client import UpstreamUncertain
 from app.whatsapp import service, test_sends
 from app.whatsapp.contracts import ProviderConnectionView
@@ -45,12 +48,15 @@ class FakeGraph:
         self.sends: list[tuple[int, bytes] | Exception] = []
         self.calls: list[dict[str, Any]] = []
         self.template_override: dict[str, Any] | None = None
+        self.catalog_error: tuple[int, bytes] | None = None
 
     def request_json(
         self, method: str, url: str, *, body: Any = None, query: Any = None, bearer: str | None = None
     ) -> tuple[int, bytes]:
         self.calls.append({"method": method, "url": url, "body": body, "query": dict(query or {})})
         if method == "GET" and url.endswith("/message_templates"):
+            if self.catalog_error is not None:
+                return self.catalog_error
             if self.template_override is not None:
                 return 200, json.dumps({"data": [self.template_override]}).encode()
             return 200, self.pages[1 if (query or {}).get("after") == "QVFIUPAGE2" else 0]
@@ -414,3 +420,78 @@ def test_watest_09_fails_closed_without_test_mode_binding_or_budget(app: FastAPI
         assert flow.preview(recipient, template, ["Blocked"]).status_code == 409
     status_view = flow.client.get(f"{API}/connection").json()
     assert status_view["live_outbound_enabled"] is False and status_view["test_sending_available"] is False
+
+
+# --- audit additions -----------------------------------------------------------------------------------------------
+
+
+def test_watest_02_catalog_errors_never_send(app: FastAPI, flow: Flow, graph: FakeGraph) -> None:
+    graph.catalog_error = (429, (FIXTURES / "cloud_send_rate_limited.json").read_bytes())
+    assert flow.sync().status_code == 503  # quota: retry later, nothing synced
+    graph.catalog_error = (401, (FIXTURES / "cloud_send_unauthorized.json").read_bytes())
+    assert flow.sync().status_code == 409  # missing access
+    graph.catalog_error = None
+    recipient, template = flow.ready()
+    created = flow.preview(recipient, template).json()
+    graph.catalog_error = (500, b"{}")  # Meta unavailable at the confirm-time re-check
+    denied = flow.confirm(created)
+    assert denied.status_code == 409 and "template_check_failed_provider_transient" in denied.json()["error"]["message"]
+    assert graph.posts() == []
+
+
+def test_watest_04_a_number_that_became_a_sourced_contact_is_denied_at_confirm(
+    app: FastAPI, org: Org, flow: Flow, graph: FakeGraph
+) -> None:
+    recipient, template = flow.ready()
+    created = flow.preview(recipient, template).json()
+    school = plain_account(app, org, "Imported School (Synthetic)")
+    with db(app) as session:  # e.g. a bulk import that bypassed the API's collision check
+        key_id, key = contacts_service.keyring(app.state.settings).current
+        session.add(Contact(organization_id=org.id, account_id=school, channel="whatsapp", role="admissions_office",
+                            key_id=key_id, address_digest=addresses.digest(key, TEST_NUMBER),
+                            address_hint=addresses.mask(TEST_NUMBER), created_by=org.owner,
+                            created_at=app.state.clock.now()))  # fmt: skip
+        session.commit()
+    denied = flow.confirm(created)
+    assert denied.status_code == 409 and "recipient_is_sourced_contact" in denied.json()["error"]["message"]
+    assert graph.posts() == []
+
+
+def test_watest_05_expired_previews_and_a_send_in_flight_never_send(app: FastAPI, flow: Flow, graph: FakeGraph) -> None:
+    recipient, template = flow.ready()
+    created = flow.preview(recipient, template).json()
+    app.state.clock.advance(timedelta(minutes=11))
+    flow.owner[0].cookies.clear()
+    flow.owner = (flow.owner[0], logged_in(flow.owner[0], "owner@r.example"))
+    flow.client.cookies.clear()
+    flow.operator = logged_in(flow.client, "operator@r.example")
+    expired = flow.confirm(created)
+    assert expired.status_code == 409 and "expired" in expired.json()["error"]["message"]
+    assert flow.sync().status_code == 200  # the catalog went stale with the clock
+    first = flow.preview(recipient, template, ["One"]).json()
+    second = flow.preview(recipient, template, ["Two"]).json()
+    with db(app) as session:  # another confirmation is mid-flight (reserved) for this connection
+        session.execute(text("UPDATE provider_test_sends SET state = 'reserved', confirmed_by = requested_by,"
+                             " confirmed_at = updated_at WHERE id = :i"), {"i": first["id"]})  # fmt: skip
+        session.commit()
+    busy = flow.confirm(second)
+    assert busy.status_code == 409 and "in flight" in busy.json()["error"]["message"]
+    assert graph.posts() == []
+
+
+def test_watest_10_a_fake_graph_receipt_is_never_real_evidence(
+    app: FastAPI, client: TestClient, org: Org, flow: Flow, graph: FakeGraph
+) -> None:
+    from app.release import readiness  # noqa: PLC0415
+
+    recipient, template = flow.ready()
+    accepted = flow.confirm(flow.preview(recipient, template).json()).json()
+    post(client, envelope(change(statuses=(status(accepted["provider_message_id"], "delivered", 0.1),))))
+    drain(app)
+    with db(app) as session:
+        checks = {c.code: c for c in readiness.checks(session, org.id, app.state.settings, app.state.clock.now())}
+        assert checks["real_test_receipt"].status == "BLOCKED_EXTERNAL"  # contract_test: a fake, never WATEST-10
+        session.execute(text("UPDATE provider_test_sends SET simulated_transport = false"))  # as if Graph was real
+        session.commit()
+        checks = {c.code: c for c in readiness.checks(session, org.id, app.state.settings, app.state.clock.now())}
+        assert checks["real_test_receipt"].status == "VERIFIED"

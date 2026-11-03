@@ -22,7 +22,7 @@ from typing import Any
 
 from app.intent.schema import ACTION_FOR, PRECEDENCE, IntentObservation, Span
 
-CLASSIFIER_VERSION = "intent-rules-1.0"
+CLASSIFIER_VERSION = "intent-rules-1.2"
 _INVISIBLE = {"​", "‌", "‍", "⁠", "﻿", "‎", "‏", "‪", "‫", "‬",
               "‭", "‮", "⁦", "⁧", "⁨", "⁩"}  # fmt: skip
 _CONFUSABLE = str.maketrans({
@@ -75,6 +75,14 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"\b(?:list|fehrist)\s+se\s+(?:nikal|hata)\w*",
         r"(?:لسٹ|فہرست)\s+سے\s+(?:نکال|ہٹا)",
         r"(?:messages?|msgs?|میسجز?|پیغامات?)\s+(?:نہ|مت)\s+(?:بھیج|کر)",
+        r"\b(?:do\s+not|don\'?t|dont)\s+(?:text|message|msg|contact|call)\w*(?:\s+(?:us|me))?\s+(?:again|anymore|any\s+more)\b",
+        r"\bno\s+more\s+(?:texts|msgs|messages|sms)\b",
+        r"\bremove\s+(?:it|me|us|my|our|this|the)\b.{0,25}\b(?:list|number|contact)",
+        r"\bremove\s+(?:it|my\s+number|our\s+number|this\s+number)\b",
+        r"\b(?:delete|hata\w*|nikal\w*)\b.{0,20}\b(?:number|contact)\b|\b(?:number|contact)\b.{0,20}\b(?:delete|hata\w*|nikal\w*)\b",
+        r"\bbas\s+k(?:a)?r(?:o|ein|en|in|dein)?\b.{0,30}\b(?:msg|message|messages|sms)\w*",
+        r"(?:میسج|میسیج|مسیج|میسجز|پیغام|پیغامات)\s+(?:نہ|نا|مت)\s+(?:کر|بھیج)",
+        r"(?:دوبارہ|دوبارا)\s+(?:میسج|میسیج|مسیج|پیغام)\s+(?:نہ|نا|مت)",
     ),
     "abusive": _p(
         r"\bscam(?:mer)?s?\b",
@@ -93,6 +101,19 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"بکواس",
         r"فراڈ",
         r"پولیس",
+        r"\bharass\w*",
+        r"\bcyber\s*crime\b",
+        r"\bscamm\w*",
+        r"\breport\s+(?:this|your|you|u)\b",
+        r"\bfia\b",
+        r"جاہل",
+        r"(?:بد)?تمیز\s+نہیں",
+        r"بدتمیز",
+        r"\bghatiya\b",
+        r"\bsharam\s+(?:nahi|nai|nhi)\b",
+        r"بے\s*شرم",
+        r"شرم\s+نہیں",
+        r"\bbesharam\b",
     ),
     "request_demo": _p(
         r"\bdemo\b",
@@ -126,6 +147,10 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"بتائیں",
         r"\bdetail\b",
         r"\bpa?c?kage\b",
+        r"\bkitne\s+ka\b",
+        r"\bdoes\s+it\s+(?:track|do|include|show|work)\b",
+        r"تفصیل\w*",
+        r"کیا\s+اس\s+میں",
     ),
     "human_request": _p(
         r"\b(?:speak|talk)\s+(?:to|with)\s+(?:a\s+|your\s+)?(?:person|human|someone|manager|principal|"
@@ -145,6 +170,17 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"کال\s+کر(?:یں|و|دیں)",
         r"\bcall\s+ka?r\s+l\w*",
         r"کال\s+کر\s+ل",
+        r"\bsend\s+(?:someone|somebody|a\s+person|your\s+rep|ur\s+rep|a\s+rep|a\s+representative)\b",
+        r"\b(?:banday|banda|bande|aadmi|rep|representative)\s+ko\s+bhej",
+        r"\bcall\s+(?:کر|kar|kr)",
+        r"\baamne\s+saamne\b",
+        r"(?:principal|owner|accountant|admin|manager|coordinator|it\s+teacher|someone|somebody|person|banday|banda|bande|sahab|sahiba|madam|rep|representative|پرنسپل|مالک|اکاؤنٹنٹ|ایڈمن|مینیجر|صاحب|صاحبہ|میڈم|بندے|بندہ|نمائندے|نمائندہ|آفس|office).{0,25}?(?:speak|talk|call|phone|ring|meet|visit|baat|mil\w*|فون|کال|بات|مل\w*|رابطہ|ملاقات)",
+        r"(?:speak|talk|call|phone|ring|meet|visit|baat|mil\w*|فون|کال|بات|مل\w*|رابطہ|ملاقات)\w*\s+(?:to|with)\s+(?:our\s+|the\s+|your\s+|ur\s+)?(?:principal|owner|accountant|admin|manager|coordinator|it\s+teacher|someone|somebody|person|banday|banda|bande|sahab|sahiba|madam|rep|representative|پرنسپل|مالک|اکاؤنٹنٹ|ایڈمن|مینیجر|صاحب|صاحبہ|میڈم|بندے|بندہ|نمائندے|نمائندہ|آفس|office)",
+        r"\bcan\s+(?:he|she|they|someone)\s+call\b",
+        r"\b(?:call|phone)\s+(?:me|us|him|her|them)\b",
+        r"\bschool\s+(?:aa|aa?\s*ke|aakar|a\s*kr|tashreef)\b",
+        r"\b(?:come|visit)\s+(?:to\s+)?(?:the\s+|our\s+)?(?:school|campus|office|us)\b",
+        r"اسکول\s+(?:آ|آئیں|تشریف)",
     ),
     "objection": _p(
         r"\balready\s+(?:use|have)\b",
@@ -168,6 +204,15 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"\bbudget\s+nahi\b",
         r"بجٹ\s+نہیں",
         r"کمپیوٹر.{0,20}?نہیں\s+آتا",
+        r"\bcan\s+barely\s+use\b",
+        r"\b(?:don\'?t|dont)\s+think\s+(?:they|we)\'?(?:ll|d|\s+will|\s+would)?\s+manage\b",
+        r"\bbudget\s+(?:nahi|nai|nahin)\b",
+        r"پیسے\s+ضائع",
+        r"(?:قیمت|price|پرائس).{0,12}بہت\s+زیادہ",
+        r"\btoo\s+(?:much|high)\b",
+        r"\bpehle\s+bhi\b.{0,25}\bliya\s+tha\b",
+        r"پہلے\s+بھی.{0,25}لیا\s+تھا",
+        r"\bbudget\s+نہیں",
     ),
     "defer": _p(
         r"\bbusy\b",
@@ -186,6 +231,17 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"کے\s+بعد",
         r"ابھی\s+نہیں",
         r"جنوری",
+        r"\bafter\s+(?:the\s+)?(?:summer|winter|eid|break|holidays?|vacations?)\b",
+        r"\bremind\s+me\b",
+        r"(?:شام|کل|بعد)\s+(?:کو|میں)\s+دیکھ",
+        r"\b(?:contact|call|message|text)\s+(?:us\s+|me\s+)?(?:after|later|next)\b",
+        r"\b(?:result|exam|exams|ramzan|ramadan|eid|vacation|vacations|session)\b.{0,15}\b(?:k|ke|ky)?\s*baad\b",
+        r"\bk\s+baad\b",
+        r"\b(?:abhi|filhal)\s+(?:bilkul\s+)?(?:time|waqt)\s+(?:nahi|nai|nhi)\b",
+        r"\bafter\s+(?:result|results|ramzan|ramadan|eid|exams?)\b",
+        r"بعد\s+میں\s+رابطہ",
+        r"امتحانات?\s+چل\s+رہے",
+        r"\bchutti\s+pe\b",
     ),
     "not_interested": _p(
         r"\bnot\s+interested\b",
@@ -202,6 +258,15 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"\bnot\s+looking\s+for\b",
         r"\bzar[ou]{1,2}rat\s+nahi",
         r"\binterest\s+نہیں",
+        r"\bhappy\s+with\s+(?:our|the)\s+(?:current|existing)\b",
+        r"\b(?:nahi|nai|nahin)\s+chahiye\b",
+        r"\b(?:nahi|nai|nahin)\s+(?:ji\s+)?shukriya\b",
+        r"^\W*نہیں\s*(?:جی)?\W*شکریہ",
+        r"(?:پرانے|موجودہ).{0,20}خوش",
+        r"\b(?:nahi|nai|nhi|nahin)\s+chahiye\b",
+        r"ہم\s+یہ\s+نہیں\s+لیں\s+گے",
+        r"نہیں\s+لیں\s+گے",
+        r"معذرت",
     ),
     "interested": _p(
         r"(?<!not\s)\binterested\b",
@@ -222,17 +287,27 @@ PATTERNS: dict[str, list[re.Pattern[str]]] = {
         r"\blooks\s+(?:good|great|useful)\b",
         r"ایسی\s+ہی\s+چیز",
         r"بہت\s+اچھا",
+        r"\bexactly\s+what\s+we\s+need\b",
+        r"\baisa\s+hi\s+chahiye\b",
+        r"\bacha\s+lag[ai]?\b",
+        r"\bacha\s+kaam\b",
+        r"اچھی\s+چیز",
+        r"\b(?:we\s+like|like\s+reading|keep\s+sending|we\s+love)\b",
+        r"ہم\s+دیکھ\s+رہے",
+        r"سوچیں\s+گے",
     ),
 }
 _REQUEST_CUE = re.compile(
-    r"\?|؟|\b(?:what|how|does|do\s+you|can\s+you|tell|send|share|kya|kitn\w*|bata\w*|bhej\w*)\b|کیا|کتن|بتا|بھیج"
+    r"\?|؟|\b(?:what\s+(?:is|are|about|does|do|kind)|what'?s|how|does|do\s+you|can\s+you|tell|send|share|kya|"
+    r"kitn\w*|bata\w*|bhej\w*)\b|کیا|کتن|بتا|بھیج"
 )
-_WEAK_DETAILS = ("needs_details:3", "needs_details:7", "needs_details:15")
+_WEAK_DETAILS = ("needs_details:1", "needs_details:3", "needs_details:7", "needs_details:15")
 _NEGATED_STOP = re.compile(
     r"(?:\b(?:don'?t|do\s+not|no\s+need\s+to|never)\s+stop\b|\bband\s+(?:mat|na)\s+kar|روکیں\s+نہیں|بند\s+نہ\s+کر"
-    r"|\bmat\s+rok)"
+    r"|\bmat\s+rok|\bband\s+(?:na|nah|mat)\s+k|بند\s+(?:نہ|نا|مت)\s+کر|\bdont\s+stop\b)"
 )
 _REPORTED = re.compile(r"\b(?:sent\s+me|example|likh\s+(?:ke|kar)|bheja\s+tha|said|says|wrote)\b|مثال|لکھ\s+کر")
+_REPORTED_AFTER = re.compile(r"^\W*(?:likh\s+(?:ke|kar|kr)|لکھ\s+کر|as\s+(?:an\s+)?example)")
 _INJECTION = re.compile(
     r"ignore\s+(?:all\s+|the\s+|any\s+)?(?:prior|previous|above|earlier)\s+instructions|system\s+admin|"
     r"disable\s+(?:the\s+)?(?:approval|safety|filters?)|you\s+are\s+(?:an?\s+)?(?:ai|assistant|bot)|"
@@ -297,13 +372,15 @@ def language_of(folded: str) -> str:
     return "english"
 
 
-def _quoted(folded: str, start: int) -> bool:
+def _quoted(folded: str, start: int, end: int | None = None) -> bool:
     """Inside an open quotation, or just after a reporting cue. Apostrophes inside words (don't, I'm) are not
     quotation marks."""
     before = _CONTRACTION.sub("", folded[:start])
     if sum(before.count(q) for q in ('"', "“", "”", "'", "«", "»")) % 2 == 1:
         return True
-    return _REPORTED.search(folded[max(0, start - 40) : start]) is not None
+    if _REPORTED.search(folded[max(0, start - 40) : start]) is not None:
+        return True
+    return end is not None and _REPORTED_AFTER.search(folded[end : end + 25]) is not None
 
 
 def classify(text: str) -> Result:
@@ -322,7 +399,7 @@ def classify(text: str) -> Result:
     for h in [h for h in hits if h.intent == "opt_out"]:
         if negated and h.reason in ("opt_out:0", "opt_out:1", "opt_out:2", "opt_out:10", "opt_out:15"):
             reasons.append("opt_out_negated")
-        elif _quoted(folded, h.start):
+        elif _quoted(folded, h.start, h.end):
             reasons.append("opt_out_quoted_or_reported")
         else:
             opt_outs.append(h)

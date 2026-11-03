@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     whatsapp_test_recipients: SecretStr | None = Field(
         default=None, validation_alias="HERMECIOUS_WHATSAPP_TEST_RECIPIENTS"
     )
+    # P5.2 reversible processing stop (runbook §1): signed items keep being stored; processing waits until false.
+    whatsapp_inbox_paused: bool = Field(default=False, validation_alias="HERMECIOUS_WHATSAPP_INBOX_PAUSED")
     # P5.3 separate test-outbound kill switch; off by default and never a production override.
     whatsapp_test_outbound_enabled: bool = Field(
         default=False, validation_alias="HERMECIOUS_WHATSAPP_TEST_OUTBOUND_ENABLED"
