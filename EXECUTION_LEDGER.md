@@ -2899,7 +2899,7 @@ The full confusion matrices come from `uv run python -m app.intent.evaluate test
 |---|---|---|
 | Targeted integration runs during the fixes | 1 → 0 | Exposed the P5.3 in-flight **500** (fixed) and two test-setup errors (utility consent wording; one worker had claimed both jobs) |
 | `bash scripts/check.sh` | 0 | Unit + contract **471**, web **4** (including the new confirm-dialog test), integration **484**, e2e **36 + 12** |
-| Dev: `alembic upgrade head` (`0025 -> 0026`) | 0 | (below) |
+| Dev: `alembic upgrade head` (`0025 -> 0026`) | 0 | `0026 (head)`; api, worker and web healthy |
 
 ### Status after the audit
 
