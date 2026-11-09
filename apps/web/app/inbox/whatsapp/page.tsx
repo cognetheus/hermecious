@@ -18,6 +18,9 @@ export default async function WhatsAppInbox({ searchParams }: { searchParams: Pr
         <Link href="/">Home</Link>
       </p>
       <h1>Inbox · WhatsApp</h1>
+      <p>
+        <Link href="/inbox/whatsapp/handoffs">Handoff queue</Link>
+      </p>
       <p role="note" style={{ fontWeight: 700, border: "2px solid currentColor", padding: "0.4rem" }}>
         {READ_ONLY_LABEL}
       </p>

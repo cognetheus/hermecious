@@ -14,6 +14,7 @@ from app.auth.dependencies import assert_api_routes_protected
 from app.auth.rate_limit import LoginRateLimiter
 from app.campaigns import routes as campaign_routes
 from app.contacts import routes as contact_routes
+from app.conversations import routes as conversation_routes
 from app.core.clock import Clock, SystemClock
 from app.core.settings import Settings
 from app.discovery import routes as discovery_routes
@@ -113,6 +114,7 @@ def create_app(
     app.include_router(whatsapp_routes.router)  # public: HMAC-authenticated Meta webhook
     app.include_router(whatsapp_admin_routes.router)
     app.include_router(inbox_routes.router)  # P5.4: read-only
+    app.include_router(conversation_routes.router)  # P6.3: ownership and handoff; never sends
     app.include_router(release_routes.router)  # P5.5: go/no-go and the guarded pilot
     assert_api_routes_protected(app)
     install_error_handling(app)

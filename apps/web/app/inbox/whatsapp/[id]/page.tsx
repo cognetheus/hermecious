@@ -2,17 +2,19 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { karachiTime } from "../../../../lib/accounts";
-import { apiGet } from "../../../../lib/api";
+import { apiGet, type CurrentUser } from "../../../../lib/api";
 import {
+  AUTO_REPLIES_LABEL,
   CONTENT_LABEL,
   deliveryText,
   type Intent,
+  type Ownership,
   READ_ONLY_LABEL,
   type ReplyProposalView,
   type Timeline,
   words,
 } from "../../../../lib/inbox";
-import { AutoRefresh, IntentReview, MarkReviewed, RejectProposal, SuggestReply } from "../actions";
+import { AutoRefresh, IntentReview, MarkReviewed, OwnershipControls, RejectProposal, SuggestReply } from "../actions";
 
 function ReplySuggestion({ messageId, lineage, mode }: { messageId: string; lineage: ReplyProposalView[]; mode: string }) {
   const latest = lineage[0];
@@ -65,6 +67,64 @@ function ReplySuggestion({ messageId, lineage, mode }: { messageId: string; line
           </p>
           {!latest.rejected && p.status === "proposed" ? <RejectProposal messageId={messageId} proposalId={latest.id} /> : null}
         </>
+      ) : null}
+    </section>
+  );
+}
+
+function OwnershipPanel({
+  ownership,
+  assignees,
+  isOwner,
+}: {
+  ownership: Ownership;
+  assignees: { id: string; name: string }[];
+  isOwner: boolean;
+}) {
+  const o = ownership;
+  const owner = o.owner_type === "human" ? (o.owner ?? "a person") : o.owner_type === "agent" ? "agent (released by a person)" : "nobody yet";
+  return (
+    <section aria-label="Ownership" style={{ border: "1px solid currentColor", padding: "0.5rem" }}>
+      <p role="note" style={{ fontWeight: 700 }}>
+        {AUTO_REPLIES_LABEL}
+      </p>
+      <p>
+        Owner: <strong>{owner}</strong> · state <strong>{words(o.state)}</strong> · generation {o.owner_generation} · revision{" "}
+        {o.revision}
+      </p>
+      {o.handoff ? (
+        <p aria-label="Handoff task">
+          Handoff ({o.handoff.status}
+          {o.handoff.urgency === "high" ? ", urgent" : ""}): {words(o.handoff.reason)}
+          {o.handoff.assigned_to ? ` · assigned to ${o.handoff.assigned_to}` : " · unassigned"} · since{" "}
+          {karachiTime(o.handoff.created_at)}
+        </p>
+      ) : null}
+      <OwnershipControls threadId={o.thread_id} revision={o.revision} assignees={assignees} isOwner={isOwner} />
+      {o.attempts.length > 0 ? (
+        <ul aria-label="Dispatch attempts">
+          {o.attempts.map((a) => (
+            <li key={a.id}>
+              {words(a.state)}
+              {a.deny_reason ? ` (${words(a.deny_reason)})` : ""} · generation {a.queued_generation}
+              {a.submitted_before_takeover ? " · submitted before the takeover (cannot be recalled)" : ""}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {o.history.length > 0 ? (
+        <details>
+          <summary>Ownership history ({o.history.length})</summary>
+          <ol aria-label="Ownership history">
+            {o.history.map((h) => (
+              <li key={`${h.generation}-${h.at}-${h.command}`}>
+                {words(h.command)} · {words(h.from)} → {words(h.to)} · {words(h.reason)} · by {h.actor ?? "unknown"} ·{" "}
+                {karachiTime(h.at)}
+                {h.canceled_attempts > 0 ? ` · ${h.canceled_attempts} queued attempt(s) cancelled` : ""}
+              </li>
+            ))}
+          </ol>
+        </details>
       ) : null}
     </section>
   );
@@ -130,6 +190,11 @@ export default async function Conversation({
     );
   }
   const { thread, entries } = body;
+  const [ownership, staff, me] = await Promise.all([
+    apiGet<Ownership>(`/api/v1/inbox/whatsapp/threads/${encodeURIComponent(thread.id)}/ownership`),
+    apiGet<{ items: { id: string; name: string }[] }>("/api/v1/inbox/whatsapp/assignees"),
+    apiGet<CurrentUser>("/api/v1/auth/me"),
+  ]);
   return (
     <main>
       <AutoRefresh seconds={10} />
@@ -145,6 +210,13 @@ export default async function Conversation({
         {thread.party.conflict ? " · this test number also matches a sourced contact; it is not mapped to that school" : ""}
         {thread.party.suppressed ? " · opted out (suppressed)" : ""} · times shown in Asia/Karachi
       </p>
+      {ownership.status === 200 ? (
+        <OwnershipPanel
+          ownership={ownership.body}
+          assignees={staff.status === 200 ? staff.body.items : []}
+          isOwner={me.status === 200 && me.body.role === "owner"}
+        />
+      ) : null}
       {thread.party.type === "unmatched" ? (
         <p>This sender is not linked to any school or contact. Nothing is created or inferred from their messages.</p>
       ) : null}

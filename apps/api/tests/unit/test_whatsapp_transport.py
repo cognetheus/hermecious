@@ -379,6 +379,7 @@ def test_waad_10_no_route_job_or_simulator_path_reaches_the_provider() -> None:
         "/api/v1/inbox/whatsapp/messages/{message_id}/intent-review",
         "/api/v1/inbox/whatsapp/messages/{message_id}/reply-proposals",  # P6.2: drafts only, never sent
         "/api/v1/inbox/whatsapp/messages/{message_id}/reply-proposals/{proposal_id}/reject",
+        "/api/v1/inbox/whatsapp/threads/{thread_id}/ownership",  # P6.3: human ownership commands; cannot send
         *(f"/api/v1/release/whatsapp/{p}" for p in (  # P5.5: every one owner-gated; only confirm can send
             "readiness/evaluate", "attestations", "catalog/sync", "pilot", "pilot/{auth_id}/pause",
             "pilot/{auth_id}/resume", "pilot/{auth_id}/revoke", "pilot-sends", "pilot-sends/{send_id}/confirm",

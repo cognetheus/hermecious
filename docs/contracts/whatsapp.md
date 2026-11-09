@@ -163,3 +163,21 @@ All routes are under `/api/v1/inbox/whatsapp/messages/{message_id}`, for owners 
 - `composer_version`, `policy_version`, `model_version: null`, `prompt_version: null`, `tool_calls: 0`, `generated_at`.
 
 The inbox timeline carries `reply_proposals` on each inbound entry, and `reply_mode` (`off`, `fixtures` or `inbound`).
+
+## P6.3 conversation ownership ([ADR-033](../adr/ADR-033-conversation-ownership-and-dispatch-fence.md))
+
+Routes are under `/api/v1/inbox/whatsapp`. Every response carries `private, no-store`, and nothing here can send.
+
+| Route | Who | Result |
+|---|---|---|
+| `GET /threads/{thread_id}/ownership` | all roles | `{state, owner_type, owner, owner_user_id, owner_generation, revision, auto_replies: "disabled", handoff, history[], attempts[{state, deny_reason, queued_generation, submitted_before_takeover}], policy_version}` |
+| `POST /threads/{thread_id}/ownership` `{command, expected_revision, reason, idempotency_key, note?, assignee_id?, urgency?}` | owner and operator (block and reopen: owner only) | 200 `view + {applied}`. 409 for a stale revision, a reused key with a changed request, an invalid transition, or a second active handoff. 422 for an invalid assignee or any extra field. 403 for observers, missing CSRF, or non-interactive actors |
+| `GET /handoffs` | all roles | the active tasks, urgent first, then oldest. Masked: no message text |
+| `GET /assignees` | owner and operator | the active owners and operators |
+
+**Dispatch attempt states:** queued, then one of:
+- denied;
+- canceled (`owner_changed`);
+- submitting, then accepted, rejected or indeterminate.
+
+An indeterminate attempt is never retried. `transport` is always `simulation`.

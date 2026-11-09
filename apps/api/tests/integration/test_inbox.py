@@ -472,6 +472,8 @@ def test_inbox_10_no_reply_send_or_enrollment_surface_exists(app: FastAPI, clien
         ("GET", f"{API}/messages/{{message_id}}/reply-proposals"),  # P6.2: drafts for review, never sent
         ("POST", f"{API}/messages/{{message_id}}/reply-proposals"),
         ("POST", f"{API}/messages/{{message_id}}/reply-proposals/{{proposal_id}}/reject"),
+        ("GET", f"{API}/threads/{{thread_id}}/ownership"),  # P6.3: human ownership and handoff; nothing sends
+        ("POST", f"{API}/threads/{{thread_id}}/ownership"), ("GET", f"{API}/handoffs"), ("GET", f"{API}/assignees"),
     ])  # fmt: skip
     assert not [t for t, _v in registry.REGISTRY if any(w in t for w in ("send", "reply", "dispatch"))]
     assert PHONE  # the bound test phone; the inbox has no route that takes a number

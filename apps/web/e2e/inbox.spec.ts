@@ -48,9 +48,9 @@ test("INBOX-10 operator reads a signed conversation, read-only, and marks it rev
   await expect(timeline.getByText("<img src=x onerror=alert(1)><script>alert(2)</script>")).toBeVisible();
   await expect(page.locator("main img, main script")).toHaveCount(0);
   await expect(timeline.getByText("Attachment or unsupported message (not downloaded)")).toBeVisible();
-  // No message composition anywhere: the only inputs are the P6.1 intent-review forms (labels and a note).
+  // No message composition anywhere: the only inputs are the P6.1 intent-review and P6.3 ownership forms.
   await expect(page.locator("main textarea")).toHaveCount(0);
-  await expect(page.locator("main input:not(form[aria-label='Review intent'] input)")).toHaveCount(0);
+  await expect(page.locator("main input:not(form[aria-label='Review intent'] input, form[aria-label='Change ownership'] input)")).toHaveCount(0);
   // P6.1: each signed message carries an intent observation for human review (rules only), never an action.
   const intents = timeline.getByRole("region", { name: "Intent for review" });
   await expect(intents).toHaveCount(4, { timeout: 30_000 });

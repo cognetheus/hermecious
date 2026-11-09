@@ -132,3 +132,56 @@ export function deliveryText(entry: OutboundEntry): string {
 export function words(code: string): string {
   return code.replaceAll("_", " ");
 }
+
+/** P6.3: who may act on a conversation. Auto replies do not exist yet; nothing here can send. */
+export const OWNERSHIP_COMMANDS = [
+  "takeover",
+  "assign",
+  "pause",
+  "resolve",
+  "release_to_agent",
+  "open_handoff",
+  "acknowledge_handoff",
+  "block",
+  "reopen",
+] as const;
+export const OWNERSHIP_REASONS = [
+  "operator_takeover",
+  "human_requested",
+  "unknown_offer",
+  "sensitive",
+  "conflicting_facts",
+  "unmatched_contact",
+  "quality_concern",
+  "resolved_by_operator",
+  "agent_release_approved",
+  "manual",
+] as const;
+
+export type Ownership = {
+  thread_id: string;
+  state: "new" | "agent_owned" | "human_owned" | "paused" | "blocked" | "resolved";
+  owner_type: "none" | "agent" | "human";
+  owner: string | null;
+  owner_user_id: string | null;
+  owner_generation: number;
+  revision: number;
+  auto_replies: "disabled";
+  handoff: { id: string; reason: string; urgency: string; status: string; assigned_to: string | null; created_at: string } | null;
+  history: { command: string; reason: string; from: string; to: string; generation: number; actor: string | null; at: string; canceled_attempts: number }[];
+  attempts: { id: string; state: string; deny_reason: string | null; queued_generation: number; submitted_before_takeover: boolean }[];
+  policy_version: string;
+};
+
+export type HandoffItem = {
+  id: string;
+  thread_id: string;
+  address: string;
+  reason: string;
+  urgency: "normal" | "high";
+  status: "open" | "acknowledged";
+  assigned_to: string | null;
+  created_at: string;
+};
+
+export const AUTO_REPLIES_LABEL = "AUTO REPLIES DISABLED — no automated reply exists; a person handles every conversation";

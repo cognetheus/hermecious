@@ -3003,6 +3003,107 @@ Real inbound integration is therefore **blocked**, not faked.
 | `bash scripts/test-integration.sh tests/integration/test_replies.py` | 1 → 0 | Fixed: fixture imports dropped by ruff's F401 auto-fix; one wrong span expectation |
 | `bash scripts/test-e2e.sh` | 0 | 37 + 13 (`replies.spec.ts` included) |
 | `bash scripts/check.sh` | 0 | Unit + contract **559**, web 4, integration **492**, e2e **37 + 13** |
-| Dev: `alembic upgrade head` (`0026 -> 0027`) | 0 | (below) |
+| Dev: `alembic upgrade head` (`0026 -> 0027`) | 0 | `0027 (head)`; api, worker and web healthy |
 
 **P6.2 status:** VERIFIED (KNOW-01..10) on synthetic data. Real-inbound use is **BLOCKED** by design until the P6.1 intent gate is signed off. Production outreach-readiness: NO.
+
+## P6.3 — Conversation ownership, human takeover and handoff (2026-11-09)
+
+**Scope:** the owner's P6.3 prompt (pasted), blueprint §4 P6.3. **Base:** `a7ba006`. **Migration head:** `0027`. The Batch 10 document is not in the repository.
+
+**Inventory:**
+- **Conversation:** the P5.4 `inbox_threads` row (org + connection + sender digest).
+- **Existing inputs:** P5.2 signed inbound rows; P4.3 `decide()` (suppression, consent, service window, template, accountable human); P5.5 `live_gate` and the kill switch; P6.2 reply proposals (append-only, reject-only, no approval).
+- **Missing:** no owner, generation, task or dispatch record existed, and no automated send path exists. The smallest safe additions are new tables only (`conversation_owners`, `conversation_owner_events`, `handoff_tasks`, `dispatch_attempts`), with **no real transport**.
+
+### OWNER requirement-to-proof plan
+
+| ID | Proof |
+|---|---|
+| OWNER-01 | One `conversation_owners` row per thread (unique), org-scoped composite FKs; a DB trigger refuses any decrease of `owner_generation` |
+| OWNER-02 | Takeover through the API: one transaction (row lock), append-only event, audit, CSRF, observer 403 |
+| OWNER-03 | Fence tests: human-owned, paused, blocked or resolved → `final_check` denies; queued attempts are cancelled inside the takeover commit |
+| OWNER-04 | Two operators racing on the same revision → exactly one wins, the other gets 409; inactive, cross-org or unknown assignees → 422 |
+| OWNER-05 | Idempotent replay (same key → same state; changed payload → 409); restart/replay never lowers the generation or opens a second task (partial unique index) |
+| OWNER-06 | Release only by an interactive human session; system/agent actors (no session verifier) → 403; release grants nothing else |
+| OWNER-07 | Fence denies on suppression or opt-out, missing reply approval, kill switch, live gate or stale draft, even when agent-owned |
+| OWNER-08 | A fake transport: an attempt submitted before takeover stays `accepted`/`indeterminate` and is flagged `submitted_before_takeover`; a timeout → `indeterminate`, never retried |
+| OWNER-09 | Inbox UI: owner pill, state, generation, task, history, controls, AUTO REPLIES DISABLED; E2E |
+| OWNER-10 | Real Postgres concurrency (barrier-forced orders), worker crash before and after commit, no egress, no contact rows created |
+
+### Implementation
+
+- **Module and migration:** `app/conversations/` (`models`, `service`, `fence`, `routes`) and migration **0028**, which creates four tables:
+  - `conversation_owners`: unique per thread. DB triggers: the generation never decreases, and rows cannot be deleted.
+  - `conversation_owner_events`: append-only, idempotency key plus request digest.
+  - `handoff_tasks`: a partial unique index allows one active task per thread.
+  - `dispatch_attempts`: `transport = 'simulation'` only.
+- **Commands:**
+  - takeover, assign, pause, block (owner only), resolve, release_to_agent, reopen (owner only), open_handoff, acknowledge_handoff;
+  - each needs a reason, an `expected_revision` and an idempotency key;
+  - interactive sessions only;
+  - a change of authority bumps the generation and cancels queued attempts in the same commit.
+- **Fence:** `enqueue` / `final_check` / `submit` (see ADR-033 for the check order).
+  - The `fence.APPROVAL` seam denies until P6.5 exists.
+  - P6.3 ships no transport.
+- **Routes:**
+  - `GET/POST …/threads/{id}/ownership` (CommandBody `extra=forbid`), `GET …/handoffs`, `GET …/assignees`;
+  - WAAD-10 and INBOX-10 route pins updated (no send route added).
+- **UI:**
+  - an ownership panel on the thread page: AUTO REPLIES DISABLED, owner, state, generation, revision, handoff task, controls with reason, assign, attempts and history;
+  - `/inbox/whatsapp/handoffs`.
+- **Docs:** ADR-033 (Proposed), contract section in `docs/contracts/whatsapp.md`.
+- **Fix found by the tests:** history was ordered by `created_at`, which is equal under a fixed clock. It is now ordered by `revision_after`, which is monotonic per thread.
+
+### Acceptance evidence
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| OWNER-01 | `test_owner_01_02_…` | One owner row per thread; `UPDATE … owner_generation = 0` → DB error (trigger); `DELETE` on events → DB error | VERIFIED |
+| OWNER-02 | `test_owner_01_02_…` | Takeover → human_owned, owner named, generation 1, handoff task assigned, one `conversation.takeover` audit. No CSRF → 403. Observer command → 403 (observer can read). Operator `block` → 403 (owner only) | VERIFIED |
+| OWNER-03 | `test_owner_03_…` ×4 (takeover, pause, block, resolve) | A queued attempt → `canceled` (`owner_changed`) in the same commit (event shows `canceled_attempts: 1`); the final check → `attempt_canceled`; a new attempt → `owner_*` denial | VERIFIED |
+| OWNER-04 | `test_owner_04_…` | Two operators released by a barrier on the same revision → `[200, 409]`, generation 1. Inactive, cross-org and unknown assignees → 422 | VERIFIED |
+| OWNER-05 | `test_owner_05_…` | Crash inside the transaction (audit raises) → 500 and nothing applied. Same key replay → `applied` True then False. Same key with a changed reason → 409. Stale revision → 409 "reload". A second active handoff → 409. Inbox redelivery and drain → generation unchanged; 1 event | VERIFIED |
+| OWNER-06 | `test_owner_06_…` | A session-less actor (job, classifier or model) → `Forbidden`. A forged `owner_generation` field → 422. Release → agent_owned, but the fence still denies with `reply_not_approved` (release grants nothing) | VERIFIED |
+| OWNER-07 | `test_owner_07_…` | With every gate open, the baseline is allowed. Kill switch → `kill_switch_engaged`; test-environment settings → `live_gate_*`; an opt-out mid-draft → `eligibility_suppressed`; a classifier-version change → `reply_not_current` | VERIFIED |
+| OWNER-08 | `test_owner_08_10_…` | Final check, then takeover, then fake submit → `accepted`, shown as `submitted_before_takeover`; the attempt queued before the takeover → `canceled`, not submitted. A caller holding the pre-takeover generation → `owner_generation_mismatch`. Timeout → `indeterminate`; resubmit → `Conflict`; the transport was called once | VERIFIED |
+| OWNER-09 | `e2e/ownership.spec.ts` (+ `@after-restart`) | Takeover with a reason → "Owner: E2E operator · state human owned · generation 1". Handoff queue lists it. A second, stale screen → error containing "reload". Pause, then resolve → generation 3, 3 history rows, empty queue. Block is not offered to an operator. No send, approve or auto button. Meta hosts blocked (0). State survives the restart | VERIFIED |
+| OWNER-10 | `test_owner_10_…` ×2 | Real Postgres orders forced by an event gate. Final check first (holding locks) → allow, then takeover 200, attempt `submitting` (never silently "unsent"). Takeover first → final check denied, attempt `canceled`. `no_egress` = []; no contact created | VERIFIED |
+
+### Mutation checks (originals restored)
+
+17 mutants. 16 were killed:
+- system actor allowed;
+- no revision check;
+- no generation bump;
+- no queued-attempt cancellation;
+- fence ignores owner state;
+- fence ignores the generation (killed after adding the stale-generation assertion; the first run **survived**);
+- fence ignores approval;
+- fence ignores stale drafts;
+- fence ignores the kill switch;
+- idempotency ignores the payload;
+- assignee unvalidated;
+- indeterminate resubmitted;
+- fence ignores eligibility;
+- fence ignores the live gate;
+- operator can block;
+- a second active task.
+
+**Survived (equivalent): O10**, "no `FOR SHARE` lock on the owner in `final_check`". The attempt row lock plus the takeover's in-transaction cancellation of queued attempts linearize on their own:
+- if the takeover's cancel waits on the attempt lock, it then skips the `submitting` row;
+- if the takeover commits first, the re-read attempt is `canceled`.
+
+The owner lock is kept as defense in depth.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `bash scripts/test-integration.sh tests/integration/test_migrations.py` | 0 | 9 passed (head 0028) |
+| `bash scripts/test-integration.sh tests/integration/test_conversations.py` | 1 → 0 | Fixed: the owner label is the display name; history ordering (see above) |
+| `bash scripts/test-e2e.sh` | 1 → 0 | Fixed: the spec read `page.url()` before navigation finished. Then 38 + 14 |
+| `bash scripts/check.sh` (first) | 1 | 2 integration failures: the qualification and school-signal "no messaging/task table" pins saw `handoff_tasks`. It is a human work queue with no message text and no send, so it was added to the documented allowlist in `auth_helpers.py` with a comment |
+| `bash scripts/check.sh` | 0 | Unit + contract **559**, web 4, integration **504**, e2e **38 + 14** |
+
+**P6.3 status:** VERIFIED (OWNER-01..10). No auto-reply and no send path exist; the fence denies everything until P6.5 supplies a reply approval. ADR-033 is Proposed. Production outreach-readiness: NO. **Next:** P6.4.

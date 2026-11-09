@@ -73,6 +73,7 @@ def mutation_headers(csrf: str, **extra: Any) -> dict[str, str]:
 # The only WhatsApp tables whose names contain "message" or "send" by design: P5.2 (ADR-027) inbound facts, the
 # P5.3 (ADR-028) owner-confirmed test send and the P5.5 (ADR-030) gated pilot send, whose callers WAAD-10 pins.
 # Guards that prove "no campaign or outbound message store exists" exclude exactly these, never by pattern.
+# P6.3 (ADR-033) adds `handoff_tasks`: a human work queue (reason, assignee, status) with no message text and no send.
 WHATSAPP_PROVIDER_TABLES = frozenset(
-    {"provider_inbound_messages", "provider_message_status", "provider_test_sends", "pilot_sends"}
+    {"provider_inbound_messages", "provider_message_status", "provider_test_sends", "pilot_sends", "handoff_tasks"}
 )
