@@ -2914,3 +2914,95 @@ The full confusion matrices come from `uv run python -m app.intent.evaluate test
 | P6.1 | INTENT-01..06, 09, 10 VERIFIED; INTENT-07 **BLOCKED** (no human review); INTENT-08 **BLOCKED_QUALITY** (`blind_v4`: 0.815 vs 0.85; safety recall 16/26) |
 
 **Production outreach-readiness: NO.** No message was sent and no live flag was changed.
+
+## P6.2 — Approved-offer knowledge and grounded reply proposals (2026-11-09)
+
+**Scope:** the owner's P6.2 prompt (pasted), blueprint §4 P6.2. **Base:** `ea04a23`, `main`, clean. **Migration head:** `0026`.
+
+**Baseline:**
+- `check.sh` was last green at `e225929`.
+- P6.1: INTENT-07 BLOCKED (no human review); INTENT-08 BLOCKED_QUALITY (`blind_v4` 0.815).
+- P5.5: NO_GO.
+- No model gateway exists.
+- `docs/phases/HERMECIOUS_BATCH_10_P6.2-P6.4.md` (and Batch 09) are not in the repository; the prompts and the blueprint are used.
+
+**Consequence of P6.1 not being verified.** Implementation and evaluation are isolated to synthetic fixtures:
+- `HERMECIOUS_REPLY_PROPOSALS=off|fixtures|inbound`, default `off`.
+- `fixtures` refuses production.
+- `inbound` refuses to start without a named human sign-off that the P6.1 intent gate passed on human-reviewed data.
+
+Real inbound integration is therefore **blocked**, not faked.
+
+### KNOW requirement-to-proof plan
+
+| ID | Proof |
+|---|---|
+| KNOW-01 | `tests/unit/test_replies.py`: reply.v1 schema rejects unknown actions, intents, invented fields and unanchored facts; exact P6.1 enum |
+| KNOW-02 | `tests/integration/test_replies.py`: knowledge comes only from the current published revision of a same-org, same-vertical offer; draft/archived/other-org/other-revision/expired-evidence claims excluded; locale `en` only |
+| KNOW-03 | `tests/unit/test_replies.py` + the fixture eval: every commercial sentence on the fixed corpus cites a valid claim digest in the snapshot |
+| KNOW-04 | Fixture and unit cases: price/discount/integration/migration/timeline/guarantee without matching facts → abstain, with the missing claim named |
+| KNOW-05 | `confirmed_facts` are message spans attributed `prospect_stated`, `verified: false`; account facts untouched (integration) |
+| KNOW-06 | Integration: intent version change, offer re-publication, claim removal and evidence expiry mark proposals stale; idempotent replay; append-only lineage |
+| KNOW-07 | Opt-out, human request, abusive and sensitive → no reply or handoff; suppressions and permissions unchanged |
+| KNOW-08 | EN/RU/UR/mixed fixtures: English-only drafts with an explicit `no_approved_translation` fallback; no translated claims |
+| KNOW-09 | Integration: auth/CSRF/org scope, conversation binding, redaction, injection, disabled mode, invalid input |
+| KNOW-10 | Inbox UI and API (DRAFT — NOT SENT / ABSTAINED / STALE, reject only); ≥60-fixture eval with a frozen hash; no egress, no send intents, no opportunity mutations |
+
+### Implementation
+
+- **Contract:** `app/replies/schema.py` (reply.v1).
+- **Knowledge:** `app/replies/knowledge.py`.
+- **Proposer:** `app/replies/composer.py` (`reply-rules-1.0`, `reply-policy-1.0`).
+- **Service:** `app/replies/service.py`.
+- **Persistence:** `app/replies/models.py`; migration **0027** (append-only `reply_proposals`, `reply_proposal_reviews`).
+- **Routes:** in `app/inbox/routes.py`. **Settings:** `HERMECIOUS_REPLY_PROPOSALS`, `HERMECIOUS_INTENT_GATE_SIGNED_BY` and `_AT`.
+- **UI:** the inbox "Suggested reply" panel. **Docs:** ADR-032 (Proposed) and the contract section.
+- **Notable choices:**
+  - No model gateway exists, so the proposer is rules-only (`model_version: null`, `tool_calls: 0`).
+  - The proposer has its own injection check, because the frozen P6.1 classifier misses "ignore all previous **rules**".
+  - The order is: safety, unmatched contact, missing claims, then ambiguous.
+
+### Acceptance evidence
+
+| ID | Test | Observed | Status |
+|---|---|---|---|
+| KNOW-01 | `tests/unit/test_replies.py::test_know_01_…` | Rejected: `send_now`, `approve_and_send`, unknown intent, a `recipient` field, `tool_calls: 1`, a model version, proposed-without-text, proposed-with-codes, a citation not in the snapshot, an unanchored fact, an unknown fact code or `verified: true` | VERIFIED |
+| KNOW-02 | `tests/integration/test_replies.py::test_know_02_05_…` | Citations ⊆ the published revision's claim digests; content hash matches. Another tenant's offer → `no_published_offer`. Evidence older than 365 days → claims excluded. Locale `en` only | VERIFIED |
+| KNOW-03 | `test_know_03_…` ×3 + corpus | **72-case frozen corpus** (`reply-fixtures-v1`, sha256 `1d7c0908…11c7`): every proposed draft cites only snapshot digests, quotes approved wording verbatim, and has no uncited assertion | VERIFIED (policy corpus, agent-authored) |
+| KNOW-04 | corpus `terms`/`priced`; `test_know_04_…` ×7 | Migration, guarantees, deadlines, integrations, discounts, SLA, ROI and an unapproved price → abstain, naming the missing claim. An approved price rule is quoted with its citation. The independent verifier catches hedged or hidden assertions ("We may, of course, guarantee…") and forged citations | VERIFIED |
+| KNOW-05 | `test_know_05_…`; `test_know_02_05_…` | Facts are exact message spans, `prospect_stated`, `verified: false`; 0 account facts written | VERIFIED |
+| KNOW-06 | `test_know_06_…` | Replay → same id (200). A classifier-version change → the old draft is `stale` (not rewritten); a new version 2 is appended and v1 marked `superseded`. UPDATE on proposals → append-only error | VERIFIED |
+| KNOW-07 | corpus + `test_know_07_10_…` ×5 | Opt-out, human request (wins over a fees question), abuse, sensitive data (nothing quoted) and injection → no draft. Suppressions, permissions, pilot sends and test sends unchanged; only the inbox job; message text not logged | VERIFIED |
+| KNOW-08 | corpus (EN 34, RU 17, UR 12, mixed 9) | Non-English → English draft with `language_fallback: true`; no Urdu-script text in any draft; Urdu/RU questions answered only with approved English claims | VERIFIED |
+| KNOW-09 | `test_know_09_…`; `tests/unit/test_reply_settings.py` | Mode off → 409. No CSRF → 403. Extra `recipient` → 422. Wrong conversation → 409. Observer → 403. Another org → 404. Reject once → 201, again → 409. Revoked session → 401. Audits `reply.proposed` and `reply.rejected`. `fixtures` refused in production; `inbound` refused without a sign-off or with a future one | VERIFIED |
+| KNOW-10 | `e2e/replies.spec.ts` (+ `@after-restart`) | A real seeded published offer and a known synthetic contact: "Suggest a reply" → DRAFT — NOT SENT, both approved claims quoted, 2 citations, "rules only, no model · nothing here is sent". Reject → shown, and it survives the restart. Opt-out → ABSTAINED, "No draft: opt out". No send or approve button; Meta hosts blocked (0) | VERIFIED |
+
+### Mutation checks (originals restored)
+
+10 of 11 were caught:
+- verifier accepts everything;
+- capability claim not required;
+- human request not winning;
+- opt-out not winning;
+- expired evidence used;
+- never stale;
+- conversation binding ignored;
+- mode gate bypassed;
+- no language-fallback flag;
+- no own injection check.
+
+**Survived (equivalent): K6**, "knowledge not org-scoped" on the offer query. The revision lookup is scoped to the organization too, so a foreign offer still yields an empty snapshot; the test proves the observable behaviour.
+
+**Not human-reviewed:** the corpus expectations are agent-authored policy expectations. Two of my own expectations were corrected during development and are noted in the conversation ("three campuses" is a stated fact; "how much will we save" is also a price question). No expectation was changed to make a failing behaviour pass.
+
+### Gate commands
+
+| Command | Exit | Result |
+|---|---|---|
+| `uv run pytest tests/unit/test_replies.py` | 0 | 84 passed (contract, 72-case corpus, verifier) |
+| `bash scripts/test-integration.sh tests/integration/test_replies.py` | 1 → 0 | Fixed: fixture imports dropped by ruff's F401 auto-fix; one wrong span expectation |
+| `bash scripts/test-e2e.sh` | 0 | 37 + 13 (`replies.spec.ts` included) |
+| `bash scripts/check.sh` | 0 | Unit + contract **559**, web 4, integration **492**, e2e **37 + 13** |
+| Dev: `alembic upgrade head` (`0026 -> 0027`) | 0 | (below) |
+
+**P6.2 status:** VERIFIED (KNOW-01..10) on synthetic data. Real-inbound use is **BLOCKED** by design until the P6.1 intent gate is signed off. Production outreach-readiness: NO.

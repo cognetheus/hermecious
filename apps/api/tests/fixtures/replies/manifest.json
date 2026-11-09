@@ -1,0 +1,17 @@
+{
+  "dataset": "reply-fixtures-v1",
+  "sha256": "1d7c09088e2c661ab398bdd79b65eb01187e68370a26d044d08013113e2411c7",
+  "items": 72,
+  "by_language": {
+    "english": 34,
+    "roman_urdu": 17,
+    "urdu_script": 12,
+    "mixed": 9
+  },
+  "by_status": {
+    "proposed": 29,
+    "abstained": 43
+  },
+  "provenance": "agent-authored policy expectations; NOT human-reviewed",
+  "composer_version": "reply-rules-1.0"
+}

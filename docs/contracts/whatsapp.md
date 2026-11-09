@@ -144,3 +144,22 @@ All routes are under `/api/v1/release/whatsapp`. Only owners and operators can r
   - after the reservation it re-reads the pilot status (pause or revoke) and the connection, as well as the stop and the live gate;
   - `provider_auth` or `provider_quota` automatically pauses the pilot (`pause_reason: provider_error`) until an owner resumes it.
 - **P4.3 contacts:** creating a contact whose number is an active WhatsApp test recipient → 409.
+
+## P6.2 reply proposals ([ADR-032](../adr/ADR-032-grounded-reply-proposals.md))
+
+All routes are under `/api/v1/inbox/whatsapp/messages/{message_id}`, for owners and operators (CSRF on writes); observers get 403. Every response carries `private, no-store`.
+
+| Route | Result |
+|---|---|
+| `POST …/reply-proposals` `{offer_id?, conversation_id?}` | 201 a new version, or 200 the same proposal for unchanged inputs. 409 if the mode is off, the message is not on the org's enabled connection, or the `conversation_id` does not match. 422 for any other field (recipient, tool, ...) |
+| `GET …/reply-proposals` | `{items: [{id, version, stale, superseded, rejected, sent: false, label: "DRAFT — NOT SENT", proposal: reply.v1}], mode}` |
+| `POST …/reply-proposals/{proposal_id}/reject` `{reason}` | 201 once, then 409 |
+
+**`reply.v1`:**
+- `status`, `proposed_reply|null`, `language_fallback`, `inbound_language`, `intent`, `intent_observation_id`, `safety_flags`;
+- `confirmed_facts[{code, text, message_id, start, end, attribution: "prospect_stated", verified: false}]`, `open_questions`, `missing_claims`;
+- `recommended_action` (allowlist), `escalate`, `citations[{kind, key, digest, sentence}]`;
+- `snapshot{offer_id, offer_revision, content_sha256, claims_digest, locale: "en"}`, `abstention_codes`;
+- `composer_version`, `policy_version`, `model_version: null`, `prompt_version: null`, `tool_calls: 0`, `generated_at`.
+
+The inbox timeline carries `reply_proposals` on each inbound entry, and `reply_mode` (`off`, `fixtures` or `inbound`).

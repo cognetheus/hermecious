@@ -33,6 +33,7 @@ POSTGRES_DB=hermecious_e2e
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 HERMECIOUS_CONTACT_HMAC_SECRETS=e2e:$(openssl rand -hex 32)
 HERMECIOUS_INBOUND_CONTENT_SECRETS=e2e:$(openssl rand -hex 32)
+HERMECIOUS_REPLY_PROPOSALS=fixtures
 HERMECIOUS_API_PORT=$api_port
 HERMECIOUS_WEB_PORT=$web_port
 EOF
@@ -131,6 +132,38 @@ with factory() as db:
                                        "metadata": {"phone_number_id": "200000000000002"}, "messages": messages}}]}]}
     counts = inbox.receive(db, settings=settings, now=clock.now(), raw=json.dumps(body).encode(), request_id=None)
     assert counts["accepted"] == 4, counts
+    # P6.2: a published offer and a known synthetic contact (…888), so a grounded draft can be suggested.
+    from datetime import UTC, datetime
+    from app.accounts import management
+    from app.accounts.models import Vertical
+    from app.contacts import service as contacts
+    from app.offers import schemas
+    from app.offers import service as offers
+    vertical = db.scalar(select(Vertical.id).where(Vertical.slug == "schools"))
+    evidence = schemas.EvidenceReference(ref="internal-demo:e2e", type="internal-demo",
+                                         recorded_at=datetime.now(UTC), description="Synthetic E2E demo")
+    content = schemas.RevisionContent(capability_version="caps-e2e", evidence_references=[evidence], capability_matrix=[
+        schemas.CapabilityClaim(capability_code=code, summary=summary, readiness="available", approved_for_sales=True,
+                                evidence_refs=[evidence.ref], approval_note="Reviewed for the E2E suite")
+        for code, summary in (("admissions_intake", "Online admissions intake with a document checklist"),
+                              ("fee_tracking", "Fee vouchers and arrears tracking"))])
+    offer = offers.create_offer(db, actor=actor, clock=clock, vertical_id=vertical, code="e2e_core",
+                                audience="Synthetic schools")
+    offers.create_revision(db, actor=actor, clock=clock, offer_id=offer.id, expected_version=offer.version,
+                           content=content)
+    db.refresh(offer)
+    offers.publish(db, actor=actor, clock=clock, offer_id=offer.id, revision_number=1, expected_version=offer.version)
+    account = management.create(db, actor=actor, clock=clock, vertical_id=vertical, name="E2E Reply School (Synthetic)",
+                                 city="Lahore", locality="Gulberg")
+    contacts.create_contact(db, actor=actor, clock=clock, keys=contacts.keyring(settings), account_id=account.id,
+                            address="+920000000888", role="admissions_office", idempotency_key=f"e2e-{run}-contact")
+    known = [{"from": "920000000888", "id": f"wamid.E2E{run}k{n}", "timestamp": str(now - 200 + n * 60),
+              "type": "text", "text": {"body": text}} for n, text in enumerate(
+                  ["Do you support admissions and fee tracking?",
+                   "Please stop contacting us, but send your price list"])]
+    body["entry"][0]["changes"][0]["value"]["messages"] = known
+    counts = inbox.receive(db, settings=settings, now=clock.now(), raw=json.dumps(body).encode(), request_id=None)
+    assert counts["accepted"] == 2, counts
 print("seeded synthetic signed inbound messages")
 PY
 

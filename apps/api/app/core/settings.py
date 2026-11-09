@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     whatsapp_test_recipients: SecretStr | None = Field(
         default=None, validation_alias="HERMECIOUS_WHATSAPP_TEST_RECIPIENTS"
     )
+    # P6.2 (ADR-032): grounded reply proposals. `off` (default); `fixtures` only outside production (synthetic data);
+    # `inbound` only with a named human sign-off that the P6.1 intent gate passed on human-reviewed data.
+    reply_proposals: Literal["off", "fixtures", "inbound"] = Field(
+        default="off", validation_alias="HERMECIOUS_REPLY_PROPOSALS"
+    )
+    intent_gate_signed_by: str | None = Field(
+        default=None, max_length=120, validation_alias="HERMECIOUS_INTENT_GATE_SIGNED_BY"
+    )
+    intent_gate_signed_at: datetime | None = Field(default=None, validation_alias="HERMECIOUS_INTENT_GATE_SIGNED_AT")
     # P5.2 reversible processing stop (runbook §1): signed items keep being stored; processing waits until false.
     whatsapp_inbox_paused: bool = Field(default=False, validation_alias="HERMECIOUS_WHATSAPP_INBOX_PAUSED")
     # P5.3 separate test-outbound kill switch; off by default and never a production override.
@@ -118,6 +127,8 @@ class Settings(BaseSettings):
         "whatsapp_test_identity_confirmed_at",
         "whatsapp_test_recipients",
         "live_outbound_approved_by",
+        "intent_gate_signed_by",
+        "intent_gate_signed_at",
         "live_outbound_approved_at",
         "build_sha",
         mode="before",
@@ -183,6 +194,15 @@ class Settings(BaseSettings):
             or self.live_outbound_approved_at > datetime.now(UTC)
         ):
             raise ValueError("HERMECIOUS_LIVE_OUTBOUND_ENABLED")
+        if self.reply_proposals == "fixtures" and self.environment == "production":
+            raise ValueError("HERMECIOUS_REPLY_PROPOSALS")  # synthetic-only mode never runs on real conversations
+        if self.reply_proposals == "inbound" and (
+            not self.intent_gate_signed_by
+            or self.intent_gate_signed_at is None
+            or self.intent_gate_signed_at.tzinfo is None
+            or self.intent_gate_signed_at > datetime.now(UTC)
+        ):
+            raise ValueError("HERMECIOUS_INTENT_GATE_SIGNED_BY")
         from app.whatsapp.config import whatsapp_setting_error  # noqa: PLC0415
 
         if (offending := whatsapp_setting_error(self)) is not None:

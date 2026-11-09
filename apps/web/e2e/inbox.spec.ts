@@ -28,8 +28,10 @@ test("INBOX-10 operator reads a signed conversation, read-only, and marks it rev
   await expect(row).toContainText("(Asia/Karachi)");
   // INBOX-07: the UTC instant is shown converted to Asia/Karachi, not merely labelled.
   const utc = await page.evaluate(async () => {
-    const body = (await (await fetch("/api/v1/inbox/whatsapp/threads")).json()) as { items: { last_activity_at: string }[] };
-    return body.items[0].last_activity_at;
+    const body = (await (await fetch("/api/v1/inbox/whatsapp/threads")).json()) as {
+      items: { last_activity_at: string; party: { address: string } }[];
+    };
+    return body.items.find((t) => t.party.address.endsWith("777"))!.last_activity_at;
   });
   const karachi = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Karachi", dateStyle: "medium", timeStyle: "short" }).format(new Date(utc));
   await expect(row).toContainText(karachi);
@@ -56,7 +58,8 @@ test("INBOX-10 operator reads a signed conversation, read-only, and marks it rev
   await expect(intents.filter({ hasText: "Intent (for review): request demo" })).toHaveCount(1);
   await expect(intents.first()).toContainText("rules only, no model");
   await expect(intents.first()).toContainText("nothing happens automatically");
-  await expect(page.getByRole("button", { name: /send|reply|enrol|consent/i })).toHaveCount(0);
+  // "Suggest a reply" only drafts (P6.2); there is still no way to send, approve, enrol or record consent.
+  await expect(page.getByRole("button", { name: /\bsend\b|reply now|approve|enrol|consent/i })).toHaveCount(0);
   expect(await page.content()).not.toContain("920000000777"); // the raw number never reaches the browser
 
   const demo = intents.filter({ hasText: "Intent (for review): request demo" });

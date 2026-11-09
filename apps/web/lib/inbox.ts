@@ -64,6 +64,34 @@ export type InboundEntry = {
   stop_signal: boolean;
   provenance: "verified_inbound";
   intent?: Intent | null;
+  reply_proposals?: ReplyProposalView[];
+};
+
+export type ReplyProposalView = {
+  id: string;
+  version: number;
+  stale: boolean;
+  superseded: boolean;
+  sent: false;
+  label: string;
+  created_at: string;
+  rejected: { reason: string; at: string } | null;
+  proposal: {
+    status: "proposed" | "abstained";
+    proposed_reply: string | null;
+    language_fallback: boolean;
+    inbound_language: string;
+    recommended_action: string;
+    escalate: boolean;
+    citations: { kind: string; key: string; digest: string; sentence: number }[];
+    confirmed_facts: { code: string; text: string; attribution: string; verified: false }[];
+    open_questions: string[];
+    missing_claims: string[];
+    abstention_codes: string[];
+    snapshot: { offer_id: string | null; offer_revision: number | null };
+    composer_version: string;
+    model_version: null;
+  };
 };
 
 export type OutboundEntry = {
@@ -83,6 +111,7 @@ export type Timeline = {
   thread: Thread;
   entries: (InboundEntry | OutboundEntry)[];
   before_cursor: string | null;
+  reply_mode?: "off" | "fixtures" | "inbound";
   read_only: true;
 };
 

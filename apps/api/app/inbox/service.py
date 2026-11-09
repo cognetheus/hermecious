@@ -365,11 +365,15 @@ def timeline(
         for _at, _id, src in reversed(page)
     ]
     from app.intent import service as intent  # noqa: PLC0415  # intent depends on this module
+    from app.replies import service as replies  # noqa: PLC0415  # replies depend on this module
 
-    intents = intent.views(db, org, [src[0].id for _at, _id, src in page if isinstance(src, tuple)])
+    inbound_ids = [src[0].id for _at, _id, src in page if isinstance(src, tuple)]
+    intents = intent.views(db, org, inbound_ids)
+    proposals = replies.views(db, org, inbound_ids, keys, now)
     for entry in entries:
         if entry["type"] == "inbound":
             entry["intent"] = intents.get(uuid.UUID(entry["id"]))
+            entry["reply_proposals"] = proposals.get(uuid.UUID(entry["id"]), [])
     oldest = page[-1] if page else None
     party = _parties(db, org, [thread])[thread.id]
     unread = int(db.scalar(select(_unread()).select_from(InboxThread).where(InboxThread.id == thread.id)) or 0)

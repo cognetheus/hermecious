@@ -3,8 +3,72 @@ import { notFound } from "next/navigation";
 
 import { karachiTime } from "../../../../lib/accounts";
 import { apiGet } from "../../../../lib/api";
-import { CONTENT_LABEL, deliveryText, type Intent, READ_ONLY_LABEL, type Timeline, words } from "../../../../lib/inbox";
-import { AutoRefresh, IntentReview, MarkReviewed } from "../actions";
+import {
+  CONTENT_LABEL,
+  deliveryText,
+  type Intent,
+  READ_ONLY_LABEL,
+  type ReplyProposalView,
+  type Timeline,
+  words,
+} from "../../../../lib/inbox";
+import { AutoRefresh, IntentReview, MarkReviewed, RejectProposal, SuggestReply } from "../actions";
+
+function ReplySuggestion({ messageId, lineage, mode }: { messageId: string; lineage: ReplyProposalView[]; mode: string }) {
+  const latest = lineage[0];
+  const p = latest?.proposal;
+  const state = !latest ? null : latest.stale ? "STALE" : p?.status === "proposed" ? latest.label : "ABSTAINED";
+  return (
+    <section aria-label="Suggested reply" style={{ borderLeft: "3px dashed currentColor", paddingLeft: "0.5rem" }}>
+      {mode === "off" ? (
+        <p>Reply suggestions are disabled until the P6.1 intent gate is verified.</p>
+      ) : (
+        <SuggestReply messageId={messageId} label={latest ? "Suggest again" : "Suggest a reply"} />
+      )}
+      {latest && p ? (
+        <>
+          <p>
+            <strong>{state}</strong> · version {latest.version} · human review required · suggested next step: {words(p.recommended_action)}
+            {latest.rejected ? ` · rejected: ${latest.rejected.reason}` : ""}
+          </p>
+          {p.proposed_reply ? (
+            <blockquote dir="auto" style={{ whiteSpace: "pre-wrap" }}>
+              {p.proposed_reply}
+            </blockquote>
+          ) : (
+            <p>No draft: {p.abstention_codes.map(words).join(", ")}</p>
+          )}
+          {p.language_fallback ? <p>The message was not in English; approved wording exists only in English, so a person must adapt it.</p> : null}
+          {p.missing_claims.length > 0 ? <p>No approved claim for: {p.missing_claims.map(words).join(", ")}</p> : null}
+          {p.citations.length > 0 ? (
+            <ul aria-label="Citations">
+              {p.citations.map((c) => (
+                <li key={`${c.key}-${c.sentence}`}>
+                  {words(c.kind)} {c.key} · digest {c.digest.slice(0, 12)} · offer revision {p.snapshot.offer_revision}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {p.confirmed_facts.length > 0 ? (
+            <ul aria-label="Stated by the correspondent (unverified)">
+              {p.confirmed_facts.map((f) => (
+                <li key={f.code} dir="auto">
+                  {words(f.code)}: <q>{f.text}</q> (stated, not verified)
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <p>
+            <small>
+              {p.composer_version} · rules only, no model · nothing here is sent
+            </small>
+          </p>
+          {!latest.rejected && p.status === "proposed" ? <RejectProposal messageId={messageId} proposalId={latest.id} /> : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
 
 function IntentNote({ messageId, intent }: { messageId: string; intent: Intent }) {
   return (
@@ -110,6 +174,9 @@ export default async function Conversation({
                 </p>
               )}
               {e.intent ? <IntentNote messageId={e.id} intent={e.intent} /> : null}
+              {e.content !== "not_text" ? (
+                <ReplySuggestion messageId={e.id} lineage={e.reply_proposals ?? []} mode={body.reply_mode ?? "off"} />
+              ) : null}
             </li>
           ) : (
             <li key={e.id} aria-label="TEST outbound message">

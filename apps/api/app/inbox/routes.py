@@ -18,6 +18,7 @@ from app.auth.models import Role
 from app.inbox import service
 from app.intent import service as intent
 from app.persistence.db import DbSession
+from app.replies import service as replies
 from app.whatsapp import content
 
 router = APIRouter(prefix="/api/v1/inbox/whatsapp", tags=["inbox"], dependencies=[Depends(authorize_request)])
@@ -53,6 +54,7 @@ def thread(
         db, actor.organization_id, thread_id, before=before, limit=limit, keys=content.keyring(settings),
         now=clock.now(),
     )  # fmt: skip
+    page["reply_mode"] = settings.reply_proposals  # P6.2: off | fixtures | inbound
     return JSONResponse(page, headers=PRIVATE)
 
 
@@ -104,3 +106,51 @@ def intent_backfill(actor: CurrentActor, db: DbSession, clock: AppClock, setting
     """Owner only: classify signed inbound messages that lack an observation for the current classifier version."""
     job_id = intent.request_backfill(db, actor=actor, clock=clock, environment=settings.environment)
     return JSONResponse({"job_id": str(job_id)}, status_code=202, headers=PRIVATE)
+
+
+class ProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # recipient, tool, campaign, send ... are refused
+    offer_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+
+
+class RejectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: Annotated[str, Field(min_length=3, max_length=500)]
+
+
+@router.post("/messages/{message_id}/reply-proposals")
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def propose_reply(
+    message_id: uuid.UUID, body: ProposalBody, actor: CurrentActor, db: DbSession, clock: AppClock,
+    settings: AppSettings,
+) -> JSONResponse:  # fmt: skip
+    """P6.2: a grounded draft or an abstention for human review. It is never sent and changes no other state."""
+    row, created = replies.generate(
+        db, actor=actor, clock=clock, settings=settings, message_id=message_id, offer_id=body.offer_id,
+        conversation_id=body.conversation_id,
+    )  # fmt: skip
+    lineage = replies.views(db, actor.organization_id, [row.inbound_message_id], content.keyring(settings),
+                            clock.now())[row.inbound_message_id]  # fmt: skip
+    return JSONResponse(next(p for p in lineage if p["id"] == str(row.id)), status_code=201 if created else 200,
+                        headers=PRIVATE)  # fmt: skip
+
+
+@router.get("/messages/{message_id}/reply-proposals")
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def reply_proposals(
+    message_id: uuid.UUID, actor: CurrentActor, db: DbSession, clock: AppClock, settings: AppSettings
+) -> JSONResponse:
+    lineage = replies.views(db, actor.organization_id, [message_id], content.keyring(settings), clock.now())
+    return JSONResponse({"items": lineage.get(message_id, []), "mode": settings.reply_proposals}, headers=PRIVATE)
+
+
+@router.post("/messages/{message_id}/reply-proposals/{proposal_id}/reject", status_code=201)
+@allow_roles(Role.OWNER, Role.OPERATOR)
+def reject_reply(
+    message_id: uuid.UUID, proposal_id: uuid.UUID, body: RejectBody, actor: CurrentActor, db: DbSession,
+    clock: AppClock,
+) -> JSONResponse:  # fmt: skip
+    review = replies.reject(db, actor=actor, clock=clock, message_id=message_id, proposal_id=proposal_id,
+                            reason=body.reason)  # fmt: skip
+    return JSONResponse({"id": str(review.id), "decision": review.decision}, status_code=201, headers=PRIVATE)
